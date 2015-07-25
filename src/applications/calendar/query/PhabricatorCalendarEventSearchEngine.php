@@ -288,6 +288,8 @@ final class PhabricatorCalendarEventSearchEngine
       }
 
       $item = id(new PHUIObjectItemView())
+        ->setUser($viewer)
+        ->setObject($event)
         ->setHeader($viewer->renderHandle($event->getPHID())->render())
         ->addAttribute($event_date_info)
         ->addAttribute($attendees)
@@ -296,7 +298,11 @@ final class PhabricatorCalendarEventSearchEngine
       $list->addItem($item);
     }
 
-    return $list;
+    $result = new PhabricatorApplicationSearchResultView();
+    $result->setObjectList($list);
+    $result->setNoDataString(pht('No events found.'));
+
+    return $result;
   }
 
   private function buildCalendarView(
@@ -357,7 +363,11 @@ final class PhabricatorCalendarEventSearchEngine
     $month_view->setBrowseURI(
       $this->getURI('query/'.$query->getQueryKey().'/'));
 
-    return $month_view;
+    // TODO redesign-2015 : Move buttons out of PHUICalendarView?
+    $result = new PhabricatorApplicationSearchResultView();
+    $result->setContent($month_view);
+
+    return $result;
   }
 
   private function buildCalendarDayView(
@@ -413,7 +423,10 @@ final class PhabricatorCalendarEventSearchEngine
     $day_view->setBrowseURI(
       $this->getURI('query/'.$query->getQueryKey().'/'));
 
-    return $day_view;
+    $result = new PhabricatorApplicationSearchResultView();
+    $result->setContent($day_view);
+
+    return $result;
   }
 
   private function getDisplayYearAndMonthAndDay(

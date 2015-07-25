@@ -158,6 +158,7 @@ final class PhabricatorCalendarEventEditController
     $icon = $event->getIcon();
     $edit_policy = $event->getEditPolicy();
     $view_policy = $event->getViewPolicy();
+    $space = $event->getSpacePHID();
 
     if ($request->isFormPost()) {
       $xactions = array();
@@ -178,6 +179,7 @@ final class PhabricatorCalendarEventEditController
       $subscribers = $request->getArr('subscribers');
       $edit_policy = $request->getStr('editPolicy');
       $view_policy = $request->getStr('viewPolicy');
+      $space = $request->getStr('spacePHID');
       $is_recurring = $request->getStr('isRecurring') ? 1 : 0;
       $frequency = $request->getStr('frequency');
       $is_all_day = $request->getStr('isAllDay');
@@ -263,6 +265,10 @@ final class PhabricatorCalendarEventEditController
         ->setTransactionType(PhabricatorTransactions::TYPE_EDIT_POLICY)
         ->setNewValue($request->getStr('editPolicy'));
 
+      $xactions[] = id(new PhabricatorCalendarEventTransaction())
+        ->setTransactionType(PhabricatorTransactions::TYPE_SPACE)
+        ->setNewValue($space);
+
       $editor = id(new PhabricatorCalendarEventEditor())
         ->setActor($viewer)
         ->setContentSourceFromRequest($request)
@@ -296,13 +302,13 @@ final class PhabricatorCalendarEventEditController
       } catch (PhabricatorApplicationTransactionValidationException $ex) {
         $validation_exception = $ex;
         $error_name = $ex->getShortMessage(
-            PhabricatorCalendarEventTransaction::TYPE_NAME);
+          PhabricatorCalendarEventTransaction::TYPE_NAME);
         $error_start_date = $ex->getShortMessage(
-            PhabricatorCalendarEventTransaction::TYPE_START_DATE);
+          PhabricatorCalendarEventTransaction::TYPE_START_DATE);
         $error_end_date = $ex->getShortMessage(
-            PhabricatorCalendarEventTransaction::TYPE_END_DATE);
+          PhabricatorCalendarEventTransaction::TYPE_END_DATE);
         $error_recurrence_end_date = $ex->getShortMessage(
-            PhabricatorCalendarEventTransaction::TYPE_RECURRENCE_END_DATE);
+          PhabricatorCalendarEventTransaction::TYPE_RECURRENCE_END_DATE);
       }
     }
 
@@ -418,11 +424,11 @@ final class PhabricatorCalendarEventEditController
       $recurrence_frequency_select = id(new AphrontFormSelectControl())
         ->setName('frequency')
         ->setOptions(array(
-            'daily' => pht('Daily'),
-            'weekly' => pht('Weekly'),
-            'monthly' => pht('Monthly'),
-            'yearly' => pht('Yearly'),
-          ))
+          'daily' => pht('Daily'),
+          'weekly' => pht('Weekly'),
+          'monthly' => pht('Monthly'),
+          'yearly' => pht('Yearly'),
+        ))
         ->setValue($frequency)
         ->setLabel(pht('Recurring Event Frequency'))
         ->setID($frequency_id)
@@ -471,6 +477,7 @@ final class PhabricatorCalendarEventEditController
       ->setCapability(PhabricatorPolicyCapability::CAN_VIEW)
       ->setPolicyObject($event)
       ->setPolicies($current_policies)
+      ->setSpacePHID($space)
       ->setName('viewPolicy');
     $edit_policies = id(new AphrontFormPolicyControl())
       ->setUser($viewer)
@@ -576,7 +583,7 @@ final class PhabricatorCalendarEventEditController
       array(
         $crumbs,
         $object_box,
-        ),
+      ),
       array(
         'title' => $page_title,
       ));

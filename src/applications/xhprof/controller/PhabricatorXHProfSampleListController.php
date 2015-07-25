@@ -5,6 +5,10 @@ final class PhabricatorXHProfSampleListController
 
   private $view;
 
+  public function shouldAllowPublic() {
+    return true;
+  }
+
   public function willProcessRequest(array $data) {
     $this->view = idx($data, 'view', 'all');
   }
@@ -13,7 +17,7 @@ final class PhabricatorXHProfSampleListController
     $request = $this->getRequest();
     $user = $request->getUser();
 
-    $pager = new AphrontPagerView();
+    $pager = new PHUIPagerView();
     $pager->setOffset($request->getInt('page'));
 
     switch ($this->view) {
