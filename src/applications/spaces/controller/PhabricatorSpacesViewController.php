@@ -83,15 +83,10 @@ final class PhabricatorSpacesViewController
 
     $description = $space->getDescription();
     if (strlen($description)) {
-      $description = PhabricatorMarkupEngine::renderOneObject(
-        id(new PhabricatorMarkupOneOff())->setContent($description),
-        'default',
-        $viewer);
-
+      $description = new PHUIRemarkupView($viewer, $description);
       $list->addSectionHeader(
         pht('Description'),
         PHUIPropertyListView::ICON_SUMMARY);
-
       $list->addTextContent($description);
     }
 
@@ -102,8 +97,7 @@ final class PhabricatorSpacesViewController
     $viewer = $this->getRequest()->getUser();
 
     $list = id(new PhabricatorActionListView())
-      ->setUser($viewer)
-      ->setObjectURI('/'.$space->getMonogram());
+      ->setUser($viewer);
 
     $can_edit = PhabricatorPolicyFilter::hasCapability(
       $viewer,

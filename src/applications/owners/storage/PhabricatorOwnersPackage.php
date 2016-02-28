@@ -4,7 +4,12 @@ final class PhabricatorOwnersPackage
   extends PhabricatorOwnersDAO
   implements
     PhabricatorPolicyInterface,
-    PhabricatorApplicationTransactionInterface {
+    PhabricatorApplicationTransactionInterface,
+    PhabricatorCustomFieldInterface,
+    PhabricatorDestructibleInterface,
+    PhabricatorConduitResultInterface,
+    PhabricatorFulltextInterface,
+    PhabricatorNgramsInterface {
 
   protected $name;
   protected $originalName;
@@ -13,37 +18,35 @@ final class PhabricatorOwnersPackage
   protected $primaryOwnerPHID;
   protected $mailKey;
   protected $status;
+  protected $viewPolicy;
+  protected $editPolicy;
 
   private $paths = self::ATTACHABLE;
   private $owners = self::ATTACHABLE;
+  private $customFields = self::ATTACHABLE;
 
   const STATUS_ACTIVE = 'active';
   const STATUS_ARCHIVED = 'archived';
 
   public static function initializeNewPackage(PhabricatorUser $actor) {
+    $app = id(new PhabricatorApplicationQuery())
+      ->setViewer($actor)
+      ->withClasses(array('PhabricatorOwnersApplication'))
+      ->executeOne();
+
+    $view_policy = $app->getPolicy(
+      PhabricatorOwnersDefaultViewCapability::CAPABILITY);
+    $edit_policy = $app->getPolicy(
+      PhabricatorOwnersDefaultEditCapability::CAPABILITY);
+
     return id(new PhabricatorOwnersPackage())
       ->setAuditingEnabled(0)
+      ->setViewPolicy($view_policy)
+      ->setEditPolicy($edit_policy)
       ->attachPaths(array())
       ->setStatus(self::STATUS_ACTIVE)
-      ->attachOwners(array());
-  }
-
-  public function getCapabilities() {
-    return array(
-      PhabricatorPolicyCapability::CAN_VIEW,
-    );
-  }
-
-  public function getPolicy($capability) {
-    return PhabricatorPolicies::POLICY_USER;
-  }
-
-  public function hasAutomaticCapability($capability, PhabricatorUser $viewer) {
-    return false;
-  }
-
-  public function describeAutomaticCapability($capability) {
-    return null;
+      ->attachOwners(array())
+      ->setDescription('');
   }
 
   public static function getStatusNameMap() {
@@ -59,24 +62,13 @@ final class PhabricatorOwnersPackage
       self::CONFIG_TIMESTAMPS => false,
       self::CONFIG_AUX_PHID => true,
       self::CONFIG_COLUMN_SCHEMA => array(
-        'name' => 'text128',
+        'name' => 'sort128',
         'originalName' => 'text255',
         'description' => 'text',
         'primaryOwnerPHID' => 'phid?',
         'auditingEnabled' => 'bool',
         'mailKey' => 'bytes20',
         'status' => 'text32',
-      ),
-      self::CONFIG_KEY_SCHEMA => array(
-        'key_phid' => null,
-        'phid' => array(
-          'columns' => array('phid'),
-          'unique' => true,
-        ),
-        'name' => array(
-          'columns' => array('name'),
-          'unique' => true,
-        ),
       ),
     ) + parent::getConfiguration();
   }
@@ -282,6 +274,57 @@ final class PhabricatorOwnersPackage
     return $this->assertAttached($this->owners);
   }
 
+  public function getOwnerPHIDs() {
+    return mpull($this->getOwners(), 'getUserPHID');
+  }
+
+  public function isOwnerPHID($phid) {
+    if (!$phid) {
+      return false;
+    }
+
+    $owner_phids = $this->getOwnerPHIDs();
+    $owner_phids = array_fuse($owner_phids);
+
+    return isset($owner_phids[$phid]);
+  }
+
+
+/* -(  PhabricatorPolicyInterface  )----------------------------------------- */
+
+
+  public function getCapabilities() {
+    return array(
+      PhabricatorPolicyCapability::CAN_VIEW,
+      PhabricatorPolicyCapability::CAN_EDIT,
+    );
+  }
+
+  public function getPolicy($capability) {
+    switch ($capability) {
+      case PhabricatorPolicyCapability::CAN_VIEW:
+        return $this->getViewPolicy();
+      case PhabricatorPolicyCapability::CAN_EDIT:
+        return $this->getEditPolicy();
+    }
+  }
+
+  public function hasAutomaticCapability($capability, PhabricatorUser $viewer) {
+    switch ($capability) {
+      case PhabricatorPolicyCapability::CAN_VIEW:
+        if ($this->isOwnerPHID($viewer->getPHID())) {
+          return true;
+        }
+        break;
+    }
+
+    return false;
+  }
+
+  public function describeAutomaticCapability($capability) {
+    return pht('Owners of a package may always view it.');
+  }
+
 
 /* -(  PhabricatorApplicationTransactionInterface  )------------------------- */
 
@@ -302,6 +345,120 @@ final class PhabricatorOwnersPackage
     PhabricatorApplicationTransactionView $timeline,
     AphrontRequest $request) {
     return $timeline;
+  }
+
+
+/* -(  PhabricatorCustomFieldInterface  )------------------------------------ */
+
+
+  public function getCustomFieldSpecificationForRole($role) {
+    return PhabricatorEnv::getEnvConfig('owners.fields');
+  }
+
+  public function getCustomFieldBaseClass() {
+    return 'PhabricatorOwnersCustomField';
+  }
+
+  public function getCustomFields() {
+    return $this->assertAttached($this->customFields);
+  }
+
+  public function attachCustomFields(PhabricatorCustomFieldAttachment $fields) {
+    $this->customFields = $fields;
+    return $this;
+  }
+
+
+/* -(  PhabricatorDestructibleInterface  )----------------------------------- */
+
+
+  public function destroyObjectPermanently(
+    PhabricatorDestructionEngine $engine) {
+
+    $this->openTransaction();
+      $conn_w = $this->establishConnection('w');
+
+      queryfx(
+        $conn_w,
+        'DELETE FROM %T WHERE packageID = %d',
+        id(new PhabricatorOwnersPath())->getTableName(),
+        $this->getID());
+
+      queryfx(
+        $conn_w,
+        'DELETE FROM %T WHERE packageID = %d',
+        id(new PhabricatorOwnersOwner())->getTableName(),
+        $this->getID());
+
+      $this->delete();
+    $this->saveTransaction();
+  }
+
+
+/* -(  PhabricatorConduitResultInterface  )---------------------------------- */
+
+
+  public function getFieldSpecificationsForConduit() {
+    return array(
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('name')
+        ->setType('string')
+        ->setDescription(pht('The name of the package.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('description')
+        ->setType('string')
+        ->setDescription(pht('The package description.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('status')
+        ->setType('string')
+        ->setDescription(pht('Active or archived status of the package.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('owners')
+        ->setType('list<map<string, wild>>')
+        ->setDescription(pht('List of package owners.')),
+    );
+  }
+
+  public function getFieldValuesForConduit() {
+    $owner_list = array();
+    foreach ($this->getOwners() as $owner) {
+      $owner_list[] = array(
+        'ownerPHID' => $owner->getUserPHID(),
+      );
+    }
+
+    return array(
+      'name' => $this->getName(),
+      'description' => $this->getDescription(),
+      'status' => $this->getStatus(),
+      'owners' => $owner_list,
+    );
+  }
+
+  public function getConduitSearchAttachments() {
+    return array(
+      id(new PhabricatorOwnersPathsSearchEngineAttachment())
+        ->setAttachmentKey('paths'),
+    );
+  }
+
+
+/* -(  PhabricatorFulltextInterface  )--------------------------------------- */
+
+
+  public function newFulltextEngine() {
+    return new PhabricatorOwnersPackageFulltextEngine();
+  }
+
+
+/* -(  PhabricatorNgramInterface  )------------------------------------------ */
+
+
+  public function newNgrams() {
+    return array(
+      id(new PhabricatorOwnersPackageNameNgrams())
+        ->setValue($this->getName()),
+    );
   }
 
 }

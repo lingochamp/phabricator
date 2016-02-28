@@ -11,3 +11,47 @@
 .phui-box.focus {
   box-shadow: 0 0 5px 5px rgba(255, 255, 0, 0.90);
 }
+
+.phui-box-grey {
+  background-color: #F7F7F9;
+  border-radius: 3px;
+  border-color: rgba({$alphagrey},.1);
+}
+
+.phui-box-blue {
+  background-color: {$bluebackground};
+  border-radius: 3px;
+  border-color: {$thinblueborder};
+}
+
+.phui-box-blue .phui-object-item,
+.phui-box-grey .phui-object-item {
+  background: transparent;
+}
+
+.phui-box-blue .phui-object-item-link,
+.phui-box-grey .phui-object-item-link {
+  color: {$darkbluetext};
+}
+
+.phui-box-blue .phui-object-item-list-view,
+.phui-box-grey .phui-object-item-list-view {
+  background-color: #fff;
+}
+
+.phui-box-blue .phui-header-shell {
+  border-color: {$thinblueborder};
+}
+
+.phui-box-grey .phui-header-shell {
+  border-color: rgba({$alphagrey},.1);
+}
+
+.phui-object-box.phui-box-blue div.phui-info-severity-nodata,
+.phui-object-box.phui-box-grey div.phui-info-severity-nodata {
+  background: transparent;
+  padding: 20px 4px 24px;
+  text-align: center;
+  border: none;
+  color: {$greytext};
+}

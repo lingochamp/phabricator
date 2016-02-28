@@ -3,6 +3,10 @@
 final class PhabricatorSlowvotePollController
   extends PhabricatorSlowvoteController {
 
+  public function shouldAllowPublic() {
+    return true;
+  }
+
   public function handleRequest(AphrontRequest $request) {
     $viewer = $request->getViewer();
     $id = $request->getURIData('id');
@@ -57,17 +61,16 @@ final class PhabricatorSlowvotePollController
       ->setHeader($header)
       ->addPropertyList($properties);
 
-    return $this->buildApplicationPage(
-      array(
-        $crumbs,
-        $object_box,
-        $poll_view,
-        $timeline,
-        $add_comment,
-      ),
-      array(
-        'title' => 'V'.$poll->getID().' '.$poll->getQuestion(),
-        'pageObjects' => array($poll->getPHID()),
+    return $this->newPage()
+      ->setTitle('V'.$poll->getID().' '.$poll->getQuestion())
+      ->setCrumbs($crumbs)
+      ->setPageObjectPHIDs(array($poll->getPHID()))
+      ->appendChild(
+        array(
+          $object_box,
+          $poll_view,
+          $timeline,
+          $add_comment,
       ));
   }
 
@@ -119,13 +122,13 @@ final class PhabricatorSlowvotePollController
 
     $view->invokeWillRenderEvent();
 
-    if (strlen($poll->getDescription())) {
-      $view->addTextContent(
-        $output = PhabricatorMarkupEngine::renderOneObject(
-          id(new PhabricatorMarkupOneOff())->setContent(
-            $poll->getDescription()),
-          'default',
-          $viewer));
+    $description = $poll->getDescription();
+    if (strlen($description)) {
+      $description = new PHUIRemarkupView($viewer, $description);
+      $view->addSectionHeader(
+        pht('Description'),
+        PHUIPropertyListView::ICON_SUMMARY);
+      $view->addTextContent($description);
     }
 
     return $view;

@@ -7,6 +7,7 @@
   text-decoration: none;
   position: relative;
   -webkit-font-smoothing: antialiased;
+  white-space: nowrap;
 }
 
 a.phui-tag-view:hover {
@@ -15,7 +16,7 @@ a.phui-tag-view:hover {
 
 .phui-tag-core-closed {
   text-decoration: line-through;
-  color: rgba(0,0,0,0.5);
+  color: rgba({$alphablack},0.5);
 }
 
 .phui-tag-core-closed:hover {
@@ -149,7 +150,7 @@ a.phui-tag-view:hover
 }
 
 .phui-object-item .phabricator-handle-tag-list-item {
-  display: inline;
+  display: inline-block;
   margin: 0 4px 2px 0;
 }
 

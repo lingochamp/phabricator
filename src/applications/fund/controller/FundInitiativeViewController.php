@@ -98,23 +98,17 @@ final class FundInitiativeViewController
 
     $description = $initiative->getDescription();
     if (strlen($description)) {
-      $description = PhabricatorMarkupEngine::renderOneObject(
-        id(new PhabricatorMarkupOneOff())->setContent($description),
-        'default',
-        $viewer);
-
-      $view->addSectionHeader(pht('Description'));
+      $description = new PHUIRemarkupView($viewer, $description);
+      $view->addSectionHeader(
+        pht('Description'), PHUIPropertyListView::ICON_SUMMARY);
       $view->addTextContent($description);
     }
 
     $risks = $initiative->getRisks();
     if (strlen($risks)) {
-      $risks = PhabricatorMarkupEngine::renderOneObject(
-        id(new PhabricatorMarkupOneOff())->setContent($risks),
-        'default',
-        $viewer);
-
-      $view->addSectionHeader(pht('Risks/Challenges'));
+      $risks = new PHUIRemarkupView($viewer, $risks);
+      $view->addSectionHeader(
+        pht('Risks/Challenges'), 'fa-ambulance');
       $view->addTextContent($risks);
     }
 

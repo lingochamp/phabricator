@@ -492,6 +492,9 @@ final class PhabricatorMarkupEngine extends Phobject {
       $rules[] = new PhabricatorYoutubeRemarkupRule();
     }
 
+    $rules[] = new PhabricatorIconRemarkupRule();
+    $rules[] = new PhabricatorEmojiRemarkupRule();
+
     $applications = PhabricatorApplication::getAllInstalledApplications();
     foreach ($applications as $application) {
       foreach ($application->getRemarkupRules() as $rule) {
@@ -510,6 +513,7 @@ final class PhabricatorMarkupEngine extends Phobject {
     $rules[] = new PhutilRemarkupItalicRule();
     $rules[] = new PhutilRemarkupDelRule();
     $rules[] = new PhutilRemarkupUnderlineRule();
+    $rules[] = new PhutilRemarkupHighlightRule();
 
     foreach (self::loadCustomInlineRules() as $rule) {
       $rules[] = $rule;

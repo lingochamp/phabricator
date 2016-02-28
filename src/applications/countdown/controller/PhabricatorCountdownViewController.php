@@ -61,20 +61,22 @@ final class PhabricatorCountdownViewController
 
     $add_comment = $this->buildCommentForm($countdown);
 
-    $content = array(
-      $crumbs,
-      $object_box,
-      $countdown_view,
-      $timeline,
-      $add_comment,
-    );
 
-    return $this->buildApplicationPage(
-      $content,
-      array(
-        'title' => $title,
-        'pageObjects' => array($countdown->getPHID()),
-      ));
+
+    return $this->newPage()
+      ->setTitle($title)
+      ->setCrumbs($crumbs)
+      ->setPageObjectPHIDs(
+        array(
+          $countdown->getPHID(),
+        ))
+      ->appendChild(
+        array(
+          $object_box,
+          $countdown_view,
+          $timeline,
+          $add_comment,
+        ));
   }
 
   private function buildActionListView(PhabricatorCountdown $countdown) {
@@ -130,11 +132,7 @@ final class PhabricatorCountdownViewController
 
     $description = $countdown->getDescription();
     if (strlen($description)) {
-      $description = PhabricatorMarkupEngine::renderOneObject(
-        id(new PhabricatorMarkupOneOff())->setContent($description),
-        'default',
-        $viewer);
-
+      $description = new PHUIRemarkupView($viewer, $description);
       $view->addSectionHeader(
         pht('Description'),
         PHUIPropertyListView::ICON_SUMMARY);
