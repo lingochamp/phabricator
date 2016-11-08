@@ -67,7 +67,7 @@ abstract class PhabricatorLiskDAO extends LiskDAO {
       $connection = $this->newBasicConnection($database, $mode, $namespace);
     }
 
-    // TODO: This should be testing if the mode is "r", but that would proably
+    // TODO: This should be testing if the mode is "r", but that would probably
     // break a lot of things. Perform a more narrow test for readonly mode
     // until we have greater certainty that this works correctly most of the
     // time.
@@ -75,10 +75,19 @@ abstract class PhabricatorLiskDAO extends LiskDAO {
       $connection->setReadOnly(true);
     }
 
-    // Unless this is a script running from the CLI, prevent any query from
-    // running for more than 30 seconds. See T10849 for discussion.
+    // Unless this is a script running from the CLI:
+    //   - (T10849) Prevent any query from running for more than 30 seconds.
+    //   - (T11672) Use persistent connections.
     if (php_sapi_name() != 'cli') {
-      $connection->setQueryTimeout(30);
+
+      // TODO: For now, disable this until after T11044: it's better at high
+      // load, but causes us to use slightly more connections at low load and
+      // is pushing users over limits like MySQL "max_connections".
+      $use_persistent = false;
+
+      $connection
+        ->setQueryTimeout(30)
+        ->setPersistent($use_persistent);
     }
 
     return $connection;
