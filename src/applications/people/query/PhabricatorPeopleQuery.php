@@ -17,6 +17,7 @@ final class PhabricatorPeopleQuery
   private $isApproved;
   private $nameLike;
   private $nameTokens;
+  private $namePrefixes;
 
   private $needPrimaryEmail;
   private $needProfile;
@@ -92,6 +93,11 @@ final class PhabricatorPeopleQuery
 
   public function withNameTokens(array $tokens) {
     $this->nameTokens = array_values($tokens);
+    return $this;
+  }
+
+  public function withNamePrefixes(array $prefixes) {
+    $this->namePrefixes = $prefixes;
     return $this;
   }
 
@@ -254,6 +260,17 @@ final class PhabricatorPeopleQuery
         $conn,
         'user.userName IN (%Ls)',
         $this->usernames);
+    }
+
+    if ($this->namePrefixes) {
+      $parts = array();
+      foreach ($this->namePrefixes as $name_prefix) {
+        $parts[] = qsprintf(
+          $conn,
+          'user.username LIKE %>',
+          $name_prefix);
+      }
+      $where[] = '('.implode(' OR ', $parts).')';
     }
 
     if ($this->emails !== null) {
@@ -481,7 +498,16 @@ final class PhabricatorPeopleQuery
           'eventPHID' => null,
           'availability' => null,
         );
+
+        // Cache that the user is available until the next event they are
+        // invited to starts.
         $availability_ttl = $max_range;
+        foreach ($events as $event) {
+          $from = $event->getStartDateTimeEpochForCache();
+          if ($from > $cursor) {
+            $availability_ttl = min($from, $availability_ttl);
+          }
+        }
       }
 
       // Never TTL the cache to longer than the maximum range we examined.

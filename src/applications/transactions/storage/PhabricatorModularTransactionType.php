@@ -35,6 +35,10 @@ abstract class PhabricatorModularTransactionType
     return;
   }
 
+  public function getTransactionHasEffect($object, $old, $new) {
+    return ($old !== $new);
+  }
+
   public function extractFilePHIDs($object, $value) {
     return array();
   }
@@ -65,6 +69,10 @@ abstract class PhabricatorModularTransactionType
 
   public function newChangeDetailView() {
     throw new PhutilMethodNotImplementedException();
+  }
+
+  public function getMailDiffSectionHeader() {
+    return pht('EDIT DETAILS');
   }
 
   public function newRemarkupChanges() {

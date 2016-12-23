@@ -4,6 +4,7 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
   implements
     PhabricatorPolicyInterface,
     PhabricatorExtendedPolicyInterface,
+    PhabricatorPolicyCodexInterface,
     PhabricatorProjectInterface,
     PhabricatorMarkupInterface,
     PhabricatorApplicationTransactionInterface,
@@ -49,6 +50,7 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
   private $parentEvent = self::ATTACHABLE;
   private $invitees = self::ATTACHABLE;
   private $importSource = self::ATTACHABLE;
+  private $rsvps = self::ATTACHABLE;
 
   private $viewerTimezone;
 
@@ -75,9 +77,16 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
       $now);
     list($datetime_start, $datetime_end) = $datetime_defaults;
 
+    // When importing events from a context like "bin/calendar reload", we may
+    // be acting as the omnipotent user.
+    $host_phid = $actor->getPHID();
+    if (!$host_phid) {
+      $host_phid = $app->getPHID();
+    }
+
     return id(new PhabricatorCalendarEvent())
       ->setDescription('')
-      ->setHostPHID($actor->getPHID())
+      ->setHostPHID($host_phid)
       ->setIsCancelled(0)
       ->setIsAllDay(0)
       ->setIsStub(0)
@@ -529,16 +538,6 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     return $is_attending;
   }
 
-  public function getIsUserInvited($phid) {
-    $uninvited_status = PhabricatorCalendarEventInvitee::STATUS_UNINVITED;
-    $declined_status = PhabricatorCalendarEventInvitee::STATUS_DECLINED;
-    $status = $this->getUserInviteStatus($phid);
-    if ($status == $uninvited_status || $status == $declined_status) {
-      return false;
-    }
-    return true;
-  }
-
   public function getIsGhostEvent() {
     return $this->isGhostEvent;
   }
@@ -582,10 +581,15 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     $start = $this->newStartDateTime();
     $end = $this->newEndDateTime();
 
-    if ($show_end) {
-      $min_date = $start->newPHPDateTime();
-      $max_date = $end->newPHPDateTime();
+    $min_date = $start->newPHPDateTime();
+    $max_date = $end->newPHPDateTime();
 
+    if ($this->getIsAllDay()) {
+      // Subtract one second since the stored date is exclusive.
+      $max_date = $max_date->modify('-1 second');
+    }
+
+    if ($show_end) {
       $min_day = $min_date->format('Y m d');
       $max_day = $max_date->format('Y m d');
 
@@ -594,8 +598,8 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
       $show_end_date = false;
     }
 
-    $min_epoch = $start->getEpoch();
-    $max_epoch = $end->getEpoch();
+    $min_epoch = $min_date->format('U');
+    $max_epoch = $max_date->format('U');
 
     if ($this->getIsAllDay()) {
       if ($show_end_date) {
@@ -632,14 +636,19 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     }
 
     if ($viewer->isLoggedIn()) {
-      $status = $this->getUserInviteStatus($viewer->getPHID());
-      switch ($status) {
-        case PhabricatorCalendarEventInvitee::STATUS_ATTENDING:
-          return 'fa-check-circle';
-        case PhabricatorCalendarEventInvitee::STATUS_INVITED:
-          return 'fa-user-plus';
-        case PhabricatorCalendarEventInvitee::STATUS_DECLINED:
-          return 'fa-times';
+      $viewer_phid = $viewer->getPHID();
+      if ($this->isRSVPInvited($viewer_phid)) {
+        return 'fa-users';
+      } else {
+        $status = $this->getUserInviteStatus($viewer_phid);
+        switch ($status) {
+          case PhabricatorCalendarEventInvitee::STATUS_ATTENDING:
+            return 'fa-check-circle';
+          case PhabricatorCalendarEventInvitee::STATUS_INVITED:
+            return 'fa-user-plus';
+          case PhabricatorCalendarEventInvitee::STATUS_DECLINED:
+            return 'fa-times-circle';
+        }
       }
     }
 
@@ -660,7 +669,12 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     }
 
     if ($viewer->isLoggedIn()) {
-      $status = $this->getUserInviteStatus($viewer->getPHID());
+      $viewer_phid = $viewer->getPHID();
+      if ($this->isRSVPInvited($viewer_phid)) {
+        return 'green';
+      }
+
+      $status = $this->getUserInviteStatus($viewer_phid);
       switch ($status) {
         case PhabricatorCalendarEventInvitee::STATUS_ATTENDING:
           return 'green';
@@ -842,7 +856,11 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     // If this is an all day event, we move the end date time forward to the
     // first second of the following day. This is consistent with what users
     // expect: an all day event from "Nov 1" to "Nov 1" lasts the entire day.
-    if ($this->getIsAllDay()) {
+
+    // For imported events, the end date is already stored with this
+    // adjustment.
+
+    if ($this->getIsAllDay() && !$this->isImportedEvent()) {
       $datetime = $datetime
         ->newAbsoluteDateTime()
         ->setHour(0)
@@ -1006,6 +1024,10 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
 
     $set = new PhutilCalendarRecurrenceSet();
 
+    if ($this->viewerTimezone) {
+      $set->setViewerTimezone($this->viewerTimezone);
+    }
+
     $rrule = $this->newRecurrenceRule();
     if (!$rrule) {
       return null;
@@ -1106,6 +1128,52 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     return $phids;
   }
 
+  public function getRSVPs($phid) {
+    return $this->assertAttachedKey($this->rsvps, $phid);
+  }
+
+  public function attachRSVPs(array $rsvps) {
+    $this->rsvps = $rsvps;
+    return $this;
+  }
+
+  public function isRSVPInvited($phid) {
+    $status_invited = PhabricatorCalendarEventInvitee::STATUS_INVITED;
+    return ($this->getRSVPStatus($phid) == $status_invited);
+  }
+
+  public function hasRSVPAuthority($phid, $other_phid) {
+    foreach ($this->getRSVPs($phid) as $rsvp) {
+      if ($rsvp->getInviteePHID() == $other_phid) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  public function getRSVPStatus($phid) {
+    // Check for an individual invitee record first.
+    $invitees = $this->invitees;
+    $invitees = mpull($invitees, null, 'getInviteePHID');
+    $invitee = idx($invitees, $phid);
+    if ($invitee) {
+      return $invitee->getStatus();
+    }
+
+    // If we don't have one, try to find an invited status for the user's
+    // projects.
+    $status_invited = PhabricatorCalendarEventInvitee::STATUS_INVITED;
+    foreach ($this->getRSVPs($phid) as $rsvp) {
+      if ($rsvp->getStatus() == $status_invited) {
+        return $status_invited;
+      }
+    }
+
+    return PhabricatorCalendarEventInvitee::STATUS_UNINVITED;
+  }
+
+
 
 /* -(  Markup Interface  )--------------------------------------------------- */
 
@@ -1203,18 +1271,6 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     return false;
   }
 
-  public function describeAutomaticCapability($capability) {
-    if ($this->isImportedEvent()) {
-      return pht(
-        'Events imported from external sources can not be edited in '.
-        'Phabricator.');
-    }
-
-    return pht(
-      'The host of an event can always view and edit it. Users who are '.
-      'invited to an event can always view it.');
-  }
-
 
 /* -(  PhabricatorExtendedPolicyInterface  )--------------------------------- */
 
@@ -1235,6 +1291,12 @@ final class PhabricatorCalendarEvent extends PhabricatorCalendarDAO
     }
 
     return $extended;
+  }
+
+/* -(  PhabricatorPolicyCodexInterface  )------------------------------------ */
+
+  public function newPolicyCodex() {
+    return new PhabricatorCalendarEventPolicyCodex();
   }
 
 
