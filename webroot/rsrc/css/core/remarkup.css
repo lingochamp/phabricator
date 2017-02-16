@@ -1,5 +1,6 @@
 /**
  * @provides phabricator-remarkup-css
+ * @requires katex-css
  */
 
 .phabricator-remarkup {

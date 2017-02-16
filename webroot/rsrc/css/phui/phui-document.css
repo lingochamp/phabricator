@@ -1,5 +1,6 @@
 /**
  * @provides phui-document-view-css
+ * @requires katex-css
  */
 
 .phui-document-view {
