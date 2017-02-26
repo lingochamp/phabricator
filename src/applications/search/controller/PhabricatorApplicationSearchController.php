@@ -169,12 +169,15 @@ final class PhabricatorApplicationSearchController
     }
 
     $submit = id(new AphrontFormSubmitControl())
-      ->setValue(pht('Execute Query'));
+      ->setValue(pht('Search'));
 
     if ($run_query && !$named_query && $user->isLoggedIn()) {
-      $submit->addCancelButton(
-        '/search/edit/'.$saved_query->getQueryKey().'/',
-        pht('Save Custom Query...'));
+      $save_button = id(new PHUIButtonView())
+        ->setTag('a')
+        ->setHref('/search/edit/'.$saved_query->getQueryKey().'/')
+        ->setText(pht('Save Query'))
+        ->setIcon('fa-floppy-o');
+      $submit->addButton($save_button);
     }
 
     // TODO: A "Create Dashboard Panel" action goes here somewhere once
@@ -239,6 +242,10 @@ final class PhabricatorApplicationSearchController
           $nux_view = null;
         }
 
+        $is_overflowing =
+          $pager->willShowPagingControls() &&
+          $engine->getResultBucket($saved_query);
+
         $force_overheated = $request->getBool('overheated');
         $is_overheated = $query->getIsOverheated() || $force_overheated;
 
@@ -265,6 +272,11 @@ final class PhabricatorApplicationSearchController
           if ($list->getInfoView()) {
             $box->setInfoView($list->getInfoView());
           }
+
+          if ($is_overflowing) {
+            $box->appendChild($this->newOverflowingView());
+          }
+
           if ($list->getContent()) {
             $box->appendChild($list->getContent());
           }
@@ -543,6 +555,22 @@ final class PhabricatorApplicationSearchController
       ->setText(pht('Use Results...'))
       ->setIcon('fa-road')
       ->setDropdownMenu($action_list);
+  }
+
+  private function newOverflowingView() {
+    $message = pht(
+      'The query matched more than one page of results. Results are '.
+      'paginated before bucketing, so later pages may contain additional '.
+      'results in any bucket.');
+
+    return id(new PHUIInfoView())
+      ->setSeverity(PHUIInfoView::SEVERITY_WARNING)
+      ->setFlush(true)
+      ->setTitle(pht('Buckets Overflowing'))
+      ->setErrors(
+        array(
+          $message,
+        ));
   }
 
   private function newOverheatedView(array $results) {

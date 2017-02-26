@@ -109,6 +109,14 @@ final class PhabricatorEditEngineConfiguration
     return $this;
   }
 
+  public function setBuiltinKey($key) {
+    if (strpos($key, '/') !== false) {
+      throw new Exception(
+        pht('EditEngine BuiltinKey contains an invalid key character "/".'));
+    }
+    return parent::setBuiltinKey($key);
+  }
+
   public function attachEngine(PhabricatorEditEngine $engine) {
     $this->engine = $engine;
     return $this;
@@ -206,6 +214,19 @@ final class PhabricatorEditEngineConfiguration
     $key = $this->getIdentifier();
 
     return "/transactions/editengine/{$engine_key}/view/{$key}/";
+  }
+
+  public function getCreateURI() {
+    $form_key = $this->getIdentifier();
+    $engine = $this->getEngine();
+
+    try {
+      $create_uri = $engine->getEditURI(null, "form/{$form_key}/");
+    } catch (Exception $ex) {
+      $create_uri = null;
+    }
+
+    return $create_uri;
   }
 
   public function getIdentifier() {
