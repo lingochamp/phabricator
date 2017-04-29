@@ -15,6 +15,7 @@ final class PhabricatorFileInfoController extends PhabricatorFileController {
       $file = id(new PhabricatorFileQuery())
         ->setViewer($viewer)
         ->withPHIDs(array($phid))
+        ->withIsDeleted(false)
         ->executeOne();
 
       if (!$file) {
@@ -25,6 +26,7 @@ final class PhabricatorFileInfoController extends PhabricatorFileController {
     $file = id(new PhabricatorFileQuery())
       ->setViewer($viewer)
       ->withIDs(array($id))
+      ->withIsDeleted(false)
       ->executeOne();
     if (!$file) {
       return new Aphront404Response();
@@ -41,8 +43,8 @@ final class PhabricatorFileInfoController extends PhabricatorFileController {
     $ttl = $file->getTTL();
     if ($ttl !== null) {
       $ttl_tag = id(new PHUITagView())
-        ->setType(PHUITagView::TYPE_STATE)
-        ->setBackgroundColor(PHUITagView::COLOR_YELLOW)
+        ->setType(PHUITagView::TYPE_SHADE)
+        ->setShade(PHUITagView::COLOR_YELLOW)
         ->setName(pht('Temporary'));
       $header->addTag($ttl_tag);
     }
@@ -50,8 +52,8 @@ final class PhabricatorFileInfoController extends PhabricatorFileController {
     $partial = $file->getIsPartial();
     if ($partial) {
       $partial_tag = id(new PHUITagView())
-        ->setType(PHUITagView::TYPE_STATE)
-        ->setBackgroundColor(PHUITagView::COLOR_ORANGE)
+        ->setType(PHUITagView::TYPE_SHADE)
+        ->setShade(PHUITagView::COLOR_ORANGE)
         ->setName(pht('Partial Upload'));
       $header->addTag($partial_tag);
     }
