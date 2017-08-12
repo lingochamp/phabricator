@@ -87,7 +87,7 @@ final class PhabricatorOAuthServerAuthorizationsSettingsPanel
         'a',
         array(
           'href' => $this->getPanelURI('?revoke='.$authorization->getID()),
-          'class' => 'small grey button',
+          'class' => 'small button button-grey',
           'sigil' => 'workflow',
         ),
         pht('Revoke'));
@@ -134,6 +134,7 @@ final class PhabricatorOAuthServerAuthorizationsSettingsPanel
 
     $panel = id(new PHUIObjectBoxView())
       ->setHeader($header)
+      ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
       ->setTable($table);
 
     return $panel;

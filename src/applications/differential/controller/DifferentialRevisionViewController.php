@@ -156,7 +156,7 @@ final class DifferentialRevisionViewController extends DifferentialController {
         phutil_tag(
           'a',
           array(
-            'class' => 'button grey',
+            'class' => 'button button-grey',
             'href' => $request_uri
               ->alter('large', 'true')
               ->setFragment('toc'),
@@ -280,6 +280,12 @@ final class DifferentialRevisionViewController extends DifferentialController {
       ->setSymbolIndexes($symbol_indexes)
       ->setTitle(pht('Diff %s', $target->getID()))
       ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY);
+
+
+    $revision_id = $revision->getID();
+    $inline_list_uri = "/revision/inlines/{$revision_id}/";
+    $inline_list_uri = $this->getApplicationURI($inline_list_uri);
+    $changeset_view->setInlineListURI($inline_list_uri);
 
     if ($repository) {
       $changeset_view->setRepository($repository);
@@ -465,7 +471,6 @@ final class DifferentialRevisionViewController extends DifferentialController {
     }
 
     Javelin::initBehavior('differential-user-select');
-    Javelin::initBehavior('differential-keyboard-navigation');
 
     $view = id(new PHUITwoColumnView())
       ->setHeader($header)
@@ -503,11 +508,13 @@ final class DifferentialRevisionViewController extends DifferentialController {
       ->setPolicyObject($revision)
       ->setHeaderIcon('fa-cog');
 
-    $status = $revision->getStatus();
-    $status_name =
-      DifferentialRevisionStatus::renderFullDescription($status);
+    $status_tag = id(new PHUITagView())
+      ->setName($revision->getStatusDisplayName())
+      ->setIcon($revision->getStatusIcon())
+      ->setColor($revision->getStatusIconColor())
+      ->setType(PHUITagView::TYPE_SHADE);
 
-    $view->addProperty(PHUIHeaderView::PROPERTY_STATUS, $status_name);
+    $view->addProperty(PHUIHeaderView::PROPERTY_STATUS, $status_tag);
 
     return $view;
   }
@@ -608,6 +615,29 @@ final class DifferentialRevisionViewController extends DifferentialController {
     $relationship_submenu = $relationship_list->newActionMenu();
     if ($relationship_submenu) {
       $curtain->addAction($relationship_submenu);
+    }
+
+    $repository = $revision->getRepository();
+    if ($repository && $repository->canPerformAutomation()) {
+      $revision_id = $revision->getID();
+
+      $op = new DrydockLandRepositoryOperation();
+      $barrier = $op->getBarrierToLanding($viewer, $revision);
+
+      if ($barrier) {
+        $can_land = false;
+      } else {
+        $can_land = true;
+      }
+
+      $action = id(new PhabricatorActionView())
+        ->setName(pht('Land Revision'))
+        ->setIcon('fa-fighter-jet')
+        ->setHref("/differential/revision/operation/{$revision_id}/")
+        ->setWorkflow(true)
+        ->setDisabled(!$can_land);
+
+      $curtain->addAction($action);
     }
 
     return $curtain;
@@ -778,7 +808,7 @@ final class DifferentialRevisionViewController extends DifferentialController {
 
     $query = id(new DifferentialRevisionQuery())
       ->setViewer($this->getRequest()->getUser())
-      ->withStatus(DifferentialRevisionQuery::STATUS_OPEN)
+      ->withStatus(DifferentialLegacyQuery::STATUS_OPEN)
       ->withUpdatedEpochBetween($recent, null)
       ->setOrder(DifferentialRevisionQuery::ORDER_MODIFIED)
       ->setLimit(10)

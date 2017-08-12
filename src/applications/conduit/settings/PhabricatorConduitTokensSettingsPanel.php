@@ -60,7 +60,7 @@ final class PhabricatorConduitTokensSettingsPanel
         javelin_tag(
           'a',
           array(
-            'class' => 'button small grey',
+            'class' => 'button small button-grey',
             'href' => '/conduit/token/terminate/'.$token->getID().'/',
             'sigil' => 'workflow',
           ),
@@ -108,6 +108,7 @@ final class PhabricatorConduitTokensSettingsPanel
 
     $panel = id(new PHUIObjectBoxView())
       ->setHeader($header)
+      ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
       ->setTable($table);
 
     return $panel;

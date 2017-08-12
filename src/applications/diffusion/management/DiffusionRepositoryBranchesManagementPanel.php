@@ -41,9 +41,10 @@ final class DiffusionRepositoryBranchesManagementPanel
     );
   }
 
-  protected function buildManagementPanelActions() {
+  public function buildManagementPanelCurtain() {
     $repository = $this->getRepository();
     $viewer = $this->getViewer();
+    $action_list = $this->getNewActionList();
 
     $can_edit = PhabricatorPolicyFilter::hasCapability(
       $viewer,
@@ -52,23 +53,24 @@ final class DiffusionRepositoryBranchesManagementPanel
 
     $branches_uri = $this->getEditPageURI();
 
-    return array(
+    $action_list->addAction(
       id(new PhabricatorActionView())
         ->setIcon('fa-pencil')
         ->setName(pht('Edit Branches'))
         ->setHref($branches_uri)
         ->setDisabled(!$can_edit)
-        ->setWorkflow(!$can_edit),
-    );
+        ->setWorkflow(!$can_edit));
+
+    return $this->getNewCurtainView($action_list);
   }
 
   public function buildManagementPanelContent() {
     $repository = $this->getRepository();
     $viewer = $this->getViewer();
+    $content = array();
 
     $view = id(new PHUIPropertyListView())
-      ->setViewer($viewer)
-      ->setActionList($this->newActions());
+      ->setViewer($viewer);
 
     $default_branch = nonempty(
       $repository->getHumanReadableDetail('default-branch'),
@@ -89,8 +91,66 @@ final class DiffusionRepositoryBranchesManagementPanel
     }
 
     $view->addProperty(pht('Autoclose Only'), $autoclose_only);
+    $content[] = $this->newBox(pht('Branches'), $view);
 
-    return $this->newBox(pht('Branches'), $view);
+    // Branch Autoclose Table
+    if (!$repository->isImporting()) {
+      $request = $this->getRequest();
+      $pager = id(new PHUIPagerView())
+        ->readFromRequest($request);
+
+      $params = array(
+        'offset' => $pager->getOffset(),
+        'limit' => $pager->getPageSize() + 1,
+        'repository' => $repository->getID(),
+      );
+
+      $branches = id(new ConduitCall('diffusion.branchquery', $params))
+        ->setUser($viewer)
+        ->execute();
+      $branches = DiffusionRepositoryRef::loadAllFromDictionaries($branches);
+      $branches = $pager->sliceResults($branches);
+
+      $rows = array();
+      foreach ($branches as $branch) {
+        $branch_name = $branch->getShortName();
+        $tracking = $repository->shouldTrackBranch($branch_name);
+        $autoclosing = $repository->shouldAutocloseBranch($branch_name);
+
+        $rows[] = array(
+          $branch_name,
+          $tracking ? pht('Tracking') : pht('Off'),
+          $autoclosing ? pht('Autoclose On') : pht('Off'),
+        );
+      }
+      $branch_table = new AphrontTableView($rows);
+      $branch_table->setHeaders(
+        array(
+          pht('Branch'),
+          pht('Track'),
+          pht('Autoclose'),
+        ));
+      $branch_table->setColumnClasses(
+        array(
+          'pri',
+          'narrow',
+          'wide',
+        ));
+
+      $box = id(new PHUIObjectBoxView())
+        ->setHeaderText(pht('Branch Status'))
+        ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
+        ->setTable($branch_table)
+        ->setPager($pager);
+      $content[] = $box;
+    } else {
+      $content[] = id(new PHUIInfoView())
+        ->setSeverity(PHUIInfoView::SEVERITY_NOTICE)
+        ->appendChild(pht('Branch status in unavailable while the repository '.
+          'is still importing.'));
+    }
+
+    return $content;
   }
 
 }

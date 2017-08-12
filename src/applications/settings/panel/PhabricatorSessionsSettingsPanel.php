@@ -58,7 +58,7 @@ final class PhabricatorSessionsSettingsPanel extends PhabricatorSettingsPanel {
         $button = phutil_tag(
           'a',
           array(
-            'class' => 'small grey button disabled',
+            'class' => 'small button button-grey disabled',
           ),
           pht('Current'));
       } else {
@@ -67,7 +67,7 @@ final class PhabricatorSessionsSettingsPanel extends PhabricatorSettingsPanel {
           'a',
           array(
             'href' => '/auth/session/terminate/'.$session->getID().'/',
-            'class' => 'small grey button',
+            'class' => 'small button button-grey',
             'sigil' => 'workflow',
           ),
           pht('Terminate'));
@@ -136,7 +136,8 @@ final class PhabricatorSessionsSettingsPanel extends PhabricatorSettingsPanel {
 
     $panel = id(new PHUIObjectBoxView())
       ->setHeader($header)
-      ->setTable($table);
+      ->setTable($table)
+      ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY);
 
     return $panel;
   }

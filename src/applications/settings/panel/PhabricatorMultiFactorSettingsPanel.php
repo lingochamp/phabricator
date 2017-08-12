@@ -69,7 +69,7 @@ final class PhabricatorMultiFactorSettingsPanel
           array(
             'href' => $this->getPanelURI('?delete='.$factor->getID()),
             'sigil' => 'workflow',
-            'class' => 'small grey button',
+            'class' => 'small button button-grey',
           ),
           pht('Remove')),
       );
@@ -126,6 +126,7 @@ final class PhabricatorMultiFactorSettingsPanel
 
     $panel->setHeader($header);
     $panel->setTable($table);
+    $panel->setBackground(PHUIObjectBoxView::BLUE_PROPERTY);
 
     return $panel;
   }
