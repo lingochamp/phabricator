@@ -15,6 +15,7 @@ final class DifferentialRevision extends DifferentialDAO
     PhabricatorDestructibleInterface,
     PhabricatorProjectInterface,
     PhabricatorFulltextInterface,
+    PhabricatorFerretInterface,
     PhabricatorConduitResultInterface,
     PhabricatorDraftInterface {
 
@@ -34,6 +35,8 @@ final class DifferentialRevision extends DifferentialDAO
   protected $mailKey;
   protected $branchName;
   protected $repositoryPHID;
+  protected $activeDiffPHID;
+
   protected $viewPolicy = PhabricatorPolicies::POLICY_USER;
   protected $editPolicy = PhabricatorPolicies::POLICY_USER;
   protected $properties = array();
@@ -56,6 +59,7 @@ final class DifferentialRevision extends DifferentialDAO
   const RELATION_SUBSCRIBED   = 'subd';
 
   const PROPERTY_CLOSED_FROM_ACCEPTED = 'wasAcceptedBeforeClose';
+  const PROPERTY_DRAFT_HOLD = 'draft.hold';
 
   public static function initializeNewRevision(PhabricatorUser $actor) {
     $app = id(new PhabricatorApplicationQuery())
@@ -66,13 +70,19 @@ final class DifferentialRevision extends DifferentialDAO
     $view_policy = $app->getPolicy(
       DifferentialDefaultViewCapability::CAPABILITY);
 
+    if (PhabricatorEnv::getEnvConfig('phabricator.show-prototypes')) {
+      $initial_state = DifferentialRevisionStatus::DRAFT;
+    } else {
+      $initial_state = DifferentialRevisionStatus::NEEDS_REVIEW;
+    }
+
     return id(new DifferentialRevision())
       ->setViewPolicy($view_policy)
       ->setAuthorPHID($actor->getPHID())
       ->attachRepository(null)
       ->attachActiveDiff(null)
       ->attachReviewers(array())
-      ->setStatus(ArcanistDifferentialRevisionStatus::NEEDS_REVIEW);
+      ->setModernRevisionStatus($initial_state);
   }
 
   protected function getConfiguration() {
@@ -441,7 +451,7 @@ final class DifferentialRevision extends DifferentialDAO
 
     // For each path which the viewer owns a package for, find other packages
     // which that authority can be used to force-accept. Once we find a way to
-    // force-accept a package, we don't need to keep loooking.
+    // force-accept a package, we don't need to keep looking.
     $has_control = array();
     foreach ($force_map as $path => $spec) {
       $path_fragments = PhabricatorOwnersPackage::splitPath($path);
@@ -612,6 +622,18 @@ final class DifferentialRevision extends DifferentialDAO
     return $this;
   }
 
+  public function setModernRevisionStatus($status) {
+    return $this->setStatus($status);
+  }
+
+  public function getModernRevisionStatus() {
+    return $this->getStatus();
+  }
+
+  public function getLegacyRevisionStatus() {
+    return $this->getStatusObject()->getLegacyKey();
+  }
+
   public function isClosed() {
     return $this->getStatusObject()->isClosedStatus();
   }
@@ -628,12 +650,20 @@ final class DifferentialRevision extends DifferentialDAO
     return $this->getStatusObject()->isNeedsReview();
   }
 
+  public function isNeedsRevision() {
+    return $this->getStatusObject()->isNeedsRevision();
+  }
+
   public function isChangePlanned() {
     return $this->getStatusObject()->isChangePlanned();
   }
 
   public function isPublished() {
     return $this->getStatusObject()->isPublished();
+  }
+
+  public function isDraft() {
+    return $this->getStatusObject()->isDraft();
   }
 
   public function getStatusIcon() {
@@ -650,7 +680,7 @@ final class DifferentialRevision extends DifferentialDAO
 
   public function getStatusObject() {
     $status = $this->getStatus();
-    return DifferentialRevisionStatus::newForLegacyStatus($status);
+    return DifferentialRevisionStatus::newForStatus($status);
   }
 
   public function getFlag(PhabricatorUser $viewer) {
@@ -671,6 +701,53 @@ final class DifferentialRevision extends DifferentialDAO
   public function attachHasDraft(PhabricatorUser $viewer, $has_draft) {
     $this->drafts[$viewer->getCacheFragment()] = $has_draft;
     return $this;
+  }
+
+  public function shouldBroadcast() {
+    if (!$this->isDraft()) {
+      return true;
+    }
+
+    return false;
+  }
+
+  public function getHoldAsDraft() {
+    return $this->getProperty(self::PROPERTY_DRAFT_HOLD, false);
+  }
+
+  public function setHoldAsDraft($hold) {
+    return $this->setProperty(self::PROPERTY_DRAFT_HOLD, $hold);
+  }
+
+  public function loadActiveBuilds(PhabricatorUser $viewer) {
+    $diff = $this->getActiveDiff();
+
+    $buildables = id(new HarbormasterBuildableQuery())
+      ->setViewer($viewer)
+      ->withContainerPHIDs(array($this->getPHID()))
+      ->withBuildablePHIDs(array($diff->getPHID()))
+      ->withManualBuildables(false)
+      ->execute();
+    if (!$buildables) {
+      return array();
+    }
+
+    return id(new HarbormasterBuildQuery())
+      ->setViewer($viewer)
+      ->withBuildablePHIDs(mpull($buildables, 'getPHID'))
+      ->withAutobuilds(false)
+      ->withBuildStatuses(
+        array(
+          HarbormasterBuildStatus::STATUS_INACTIVE,
+          HarbormasterBuildStatus::STATUS_PENDING,
+          HarbormasterBuildStatus::STATUS_BUILDING,
+          HarbormasterBuildStatus::STATUS_FAILED,
+          HarbormasterBuildStatus::STATUS_ABORTED,
+          HarbormasterBuildStatus::STATUS_ERROR,
+          HarbormasterBuildStatus::STATUS_PAUSED,
+          HarbormasterBuildStatus::STATUS_DEADLOCKED,
+        ))
+      ->execute();
   }
 
 
@@ -862,7 +939,7 @@ final class DifferentialRevision extends DifferentialDAO
         self::TABLE_COMMIT,
         $this->getID());
 
-      // we have to do paths a little differentally as they do not have
+      // we have to do paths a little differently as they do not have
       // an id or phid column for delete() to act on
       $dummy_path = new DifferentialAffectedPath();
       queryfx(
@@ -884,6 +961,14 @@ final class DifferentialRevision extends DifferentialDAO
   }
 
 
+/* -(  PhabricatorFerretInterface  )----------------------------------------- */
+
+
+  public function newFerretEngine() {
+    return new DifferentialRevisionFerretEngine();
+  }
+
+
 /* -(  PhabricatorConduitResultInterface  )---------------------------------- */
 
 
@@ -897,13 +982,41 @@ final class DifferentialRevision extends DifferentialDAO
         ->setKey('authorPHID')
         ->setType('phid')
         ->setDescription(pht('Revision author PHID.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('status')
+        ->setType('map<string, wild>')
+        ->setDescription(pht('Information about revision status.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('repositoryPHID')
+        ->setType('phid?')
+        ->setDescription(pht('Revision repository PHID.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('diffPHID')
+        ->setType('phid')
+        ->setDescription(pht('Active diff PHID.')),
+      id(new PhabricatorConduitSearchFieldSpecification())
+        ->setKey('summary')
+        ->setType('string')
+        ->setDescription(pht('Revision summary.')),
     );
   }
 
   public function getFieldValuesForConduit() {
+    $status = $this->getStatusObject();
+    $status_info = array(
+      'value' => $status->getKey(),
+      'name' => $status->getDisplayName(),
+      'closed' => $status->isClosedStatus(),
+      'color.ansi' => $status->getANSIColor(),
+    );
+
     return array(
       'title' => $this->getTitle(),
       'authorPHID' => $this->getAuthorPHID(),
+      'status' => $status_info,
+      'repositoryPHID' => $this->getRepositoryPHID(),
+      'diffPHID' => $this->getActiveDiffPHID(),
+      'summary' => $this->getSummary(),
     );
   }
 

@@ -8,6 +8,7 @@ final class DifferentialRevisionStatus extends Phobject {
   const ACCEPTED = 'accepted';
   const PUBLISHED = 'published';
   const ABANDONED = 'abandoned';
+  const DRAFT = 'draft';
 
   private $key;
   private $spec = array();
@@ -32,6 +33,18 @@ final class DifferentialRevisionStatus extends Phobject {
     return idx($this->spec, 'color.tag', 'bluegrey');
   }
 
+  public function getTimelineIcon() {
+    return idx($this->spec, 'icon.timeline');
+  }
+
+  public function getTimelineColor() {
+    return idx($this->spec, 'color.timeline');
+  }
+
+  public function getANSIColor() {
+    return idx($this->spec, 'color.ansi');
+  }
+
   public function getDisplayName() {
     return idx($this->spec, 'name');
   }
@@ -52,12 +65,20 @@ final class DifferentialRevisionStatus extends Phobject {
     return ($this->key === self::NEEDS_REVIEW);
   }
 
+  public function isNeedsRevision() {
+    return ($this->key === self::NEEDS_REVISION);
+  }
+
   public function isPublished() {
     return ($this->key === self::PUBLISHED);
   }
 
   public function isChangePlanned() {
     return ($this->key === self::CHANGES_PLANNED);
+  }
+
+  public function isDraft() {
+    return ($this->key === self::DRAFT);
   }
 
   public static function newForStatus($status) {
@@ -72,22 +93,11 @@ final class DifferentialRevisionStatus extends Phobject {
     return $result;
   }
 
-  public static function newForLegacyStatus($legacy_status) {
-    $result = new self();
+  public static function getAll() {
+    $result = array();
 
-    $map = self::getMap();
-    foreach ($map as $key => $spec) {
-      if (!isset($spec['legacy'])) {
-        continue;
-      }
-
-      if ($spec['legacy'] != $legacy_status) {
-        continue;
-      }
-
-      $result->key = $key;
-      $result->spec = $spec;
-      break;
+    foreach (self::getMap() as $key => $spec) {
+      $result[$key] = self::newForStatus($key);
     }
 
     return $result;
@@ -102,19 +112,23 @@ final class DifferentialRevisionStatus extends Phobject {
         'name' => pht('Needs Review'),
         'legacy' => 0,
         'icon' => 'fa-code',
+        'icon.timeline' => 'fa-undo',
         'closed' => false,
         'color.icon' => 'grey',
         'color.tag' => 'bluegrey',
         'color.ansi' => 'magenta',
+        'color.timeline' => 'orange',
       ),
       self::NEEDS_REVISION => array(
         'name' => pht('Needs Revision'),
         'legacy' => 1,
         'icon' => 'fa-refresh',
+        'icon.timeline' => 'fa-times',
         'closed' => false,
         'color.icon' => 'red',
         'color.tag' => 'red',
         'color.ansi' => 'red',
+        'color.timeline' => 'red',
       ),
       self::CHANGES_PLANNED => array(
         'name' => pht('Changes Planned'),
@@ -129,10 +143,12 @@ final class DifferentialRevisionStatus extends Phobject {
         'name' => pht('Accepted'),
         'legacy' => 2,
         'icon' => 'fa-check',
+        'icon.timeline' => 'fa-check',
         'closed' => $close_on_accept,
         'color.icon' => 'green',
         'color.tag' => 'green',
         'color.ansi' => 'green',
+        'color.timeline' => 'green',
       ),
       self::PUBLISHED => array(
         'name' => pht('Closed'),
@@ -150,6 +166,16 @@ final class DifferentialRevisionStatus extends Phobject {
         'closed' => true,
         'color.icon' => 'black',
         'color.tag' => 'indigo',
+        'color.ansi' => null,
+      ),
+      self::DRAFT => array(
+        'name' => pht('Draft'),
+        // For legacy clients, treat this as though it is "Needs Review".
+        'legacy' => 0,
+        'icon' => 'fa-file-text-o',
+        'closed' => false,
+        'color.icon' => 'grey',
+        'color.tag' => 'grey',
         'color.ansi' => null,
       ),
     );

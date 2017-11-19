@@ -10,7 +10,8 @@ final class DifferentialRevisionReopenTransaction
     return pht('Reopen Revision');
   }
 
-  protected function getRevisionActionDescription() {
+  protected function getRevisionActionDescription(
+    DifferentialRevision $revision) {
     return pht('This revision will be reopened for review.');
   }
 
@@ -35,7 +36,8 @@ final class DifferentialRevisionReopenTransaction
   }
 
   public function applyInternalEffects($object, $value) {
-    $object->setStatus(ArcanistDifferentialRevisionStatus::NEEDS_REVIEW);
+    $status_review = DifferentialRevisionStatus::NEEDS_REVIEW;
+    $object->setModernRevisionStatus($status_review);
   }
 
   protected function validateAction($object, PhabricatorUser $viewer) {

@@ -313,6 +313,15 @@ abstract class PhabricatorEditEngine
 
 
   /**
+   * @task text
+   */
+  protected function getPageHeader($object) {
+    return null;
+  }
+
+
+
+  /**
    * Return a human-readable header describing what this engine is used to do,
    * like "Configure Maniphest Task Forms".
    *
@@ -754,7 +763,7 @@ abstract class PhabricatorEditEngine
    * Load an object given a configured query.
    *
    * @param PhabricatorPolicyAwareQuery Configured query.
-   * @param list<const> List of required capabilitiy constants, or omit for
+   * @param list<const> List of required capability constants, or omit for
    *  defaults.
    * @return object|null Object, or null if no such object exists.
    * @task load
@@ -1141,10 +1150,8 @@ abstract class PhabricatorEditEngine
 
     if ($this->getIsCreate()) {
       $header_text = $this->getFormHeaderText($object);
-      $header_icon = 'fa-plus-square';
     } else {
       $header_text = $this->getObjectEditTitleText($object);
-      $header_icon = 'fa-pencil';
     }
 
     $show_preview = !$request->isAjax();
@@ -1171,6 +1178,9 @@ abstract class PhabricatorEditEngine
 
     $form = $this->buildEditForm($object, $fields);
 
+    $crumbs = $this->buildCrumbs($object, $final = true);
+    $crumbs->setBorder(true);
+
     if ($request->isAjax()) {
       return $this->getController()
         ->newDialog()
@@ -1182,22 +1192,18 @@ abstract class PhabricatorEditEngine
         ->addSubmitButton($submit_button);
     }
 
-    $crumbs = $this->buildCrumbs($object, $final = true);
-
-    $header = id(new PHUIHeaderView())
-      ->setHeader($header_text)
-      ->setHeaderIcon($header_icon);
-    $crumbs->setBorder(true);
+    $box_header = id(new PHUIHeaderView())
+      ->setHeader($header_text);
 
     if ($action_button) {
-      $header->addActionLink($action_button);
+      $box_header->addActionLink($action_button);
     }
 
     $box = id(new PHUIObjectBoxView())
       ->setUser($viewer)
-      ->setHeaderText($this->getObjectName())
+      ->setHeader($box_header)
       ->setValidationException($validation_exception)
-      ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
+      ->setBackground(PHUIObjectBoxView::WHITE_CONFIG)
       ->appendChild($form);
 
     // This is fairly questionable, but in use by Settings.
@@ -1212,11 +1218,10 @@ abstract class PhabricatorEditEngine
 
     $view = new PHUITwoColumnView();
 
-    if ($header) {
-      $view->setHeader($header);
+    $page_header = $this->getPageHeader($object);
+    if ($page_header) {
+      $view->setHeader($page_header);
     }
-
-    $view->setFooter($content);
 
     $page = $controller->newPage()
       ->setTitle($header_text)
@@ -1225,7 +1230,11 @@ abstract class PhabricatorEditEngine
 
     $navigation = $this->getNavigation();
     if ($navigation) {
-      $page->setNavigation($navigation);
+      $view->setFixed(true);
+      $view->setNavigation($navigation);
+      $view->setMainColumn($content);
+    } else {
+      $view->setFooter($content);
     }
 
     return $page;
@@ -1373,7 +1382,7 @@ abstract class PhabricatorEditEngine
    * and that field is visible and editable for the user.
    *
    * For example, you can use it to test if a user is able to reassign tasks
-   * or not, prior to rendering dedicated UI for task reassingment.
+   * or not, prior to rendering dedicated UI for task reassignment.
    *
    * Note that this method does NOT test if the user can actually edit the
    * current object, just if they have access to the related field.

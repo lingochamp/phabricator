@@ -10,8 +10,13 @@ final class DifferentialRevisionRequestReviewTransaction
     return pht('Request Review');
   }
 
-  protected function getRevisionActionDescription() {
-    return pht('This revision will be returned to reviewers for feedback.');
+  protected function getRevisionActionDescription(
+    DifferentialRevision $revision) {
+    if ($revision->isDraft()) {
+      return pht('This revision will be submitted to reviewers for feedback.');
+    } else {
+      return pht('This revision will be returned to reviewers for feedback.');
+    }
   }
 
   public function getColor() {
@@ -27,13 +32,12 @@ final class DifferentialRevisionRequestReviewTransaction
   }
 
   public function generateOldValue($object) {
-    $status_review = ArcanistDifferentialRevisionStatus::NEEDS_REVIEW;
-    return ($object->getStatus() == $status_review);
+    return $object->isNeedsReview();
   }
 
   public function applyInternalEffects($object, $value) {
-    $status_review = ArcanistDifferentialRevisionStatus::NEEDS_REVIEW;
-    $object->setStatus($status_review);
+    $status_review = DifferentialRevisionStatus::NEEDS_REVIEW;
+    $object->setModernRevisionStatus($status_review);
   }
 
   protected function validateAction($object, PhabricatorUser $viewer) {

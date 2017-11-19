@@ -10,8 +10,6 @@ final class DifferentialRevisionQuery
 
   private $pathIDs = array();
 
-  private $status             = 'status-any';
-
   private $authors = array();
   private $draftAuthors = array();
   private $ccs = array();
@@ -25,6 +23,8 @@ final class DifferentialRevisionQuery
   private $repositoryPHIDs;
   private $updatedEpochMin;
   private $updatedEpochMax;
+  private $statuses;
+  private $isOpen;
 
   const ORDER_MODIFIED      = 'order-modified';
   const ORDER_CREATED       = 'order-created';
@@ -37,8 +37,6 @@ final class DifferentialRevisionQuery
   private $needReviewerAuthority;
   private $needDrafts;
   private $needFlags;
-
-  private $buildingGlobalOrder;
 
 
 /* -(  Query Configuration  )------------------------------------------------ */
@@ -133,16 +131,13 @@ final class DifferentialRevisionQuery
     return $this;
   }
 
-  /**
-   * Filter results to revisions with a given status. Provide a class constant,
-   * such as `DifferentialLegacyQuery::STATUS_OPEN`.
-   *
-   * @param const Class STATUS constant, like STATUS_OPEN.
-   * @return this
-   * @task config
-   */
-  public function withStatus($status_constant) {
-    $this->status = $status_constant;
+  public function withStatuses(array $statuses) {
+    $this->statuses = $statuses;
+    return $this;
+  }
+
+  public function withIsOpen($is_open) {
+    $this->isOpen = $is_open;
     return $this;
   }
 
@@ -323,7 +318,7 @@ final class DifferentialRevisionQuery
    */
   protected function loadPage() {
     $data = $this->loadData();
-
+    $data = $this->didLoadRawRows($data);
     $table = $this->newResultObject();
     return $table->loadAllFromArray($data);
   }
@@ -487,12 +482,11 @@ final class DifferentialRevisionQuery
     }
 
     if (count($selects) > 1) {
-      $this->buildingGlobalOrder = true;
       $query = qsprintf(
         $conn_r,
         '%Q %Q %Q',
         implode(' UNION DISTINCT ', $selects),
-        $this->buildOrderClause($conn_r),
+        $this->buildOrderClause($conn_r, true),
         $this->buildLimitClause($conn_r));
     } else {
       $query = head($selects);
@@ -516,7 +510,6 @@ final class DifferentialRevisionQuery
     $group_by = $this->buildGroupClause($conn_r);
     $having = $this->buildHavingClause($conn_r);
 
-    $this->buildingGlobalOrder = false;
     $order_by = $this->buildOrderClause($conn_r);
 
     $limit = $this->buildLimitClause($conn_r);
@@ -694,14 +687,24 @@ final class DifferentialRevisionQuery
         $this->updatedEpochMax);
     }
 
-    // NOTE: Although the status constants are integers in PHP, the column is a
-    // string column in MySQL, and MySQL won't use keys on string columns if
-    // you put integers in the query.
-    $statuses = DifferentialLegacyQuery::getQueryValues($this->status);
-    if ($statuses !== null) {
+    if ($this->statuses !== null) {
       $where[] = qsprintf(
         $conn_r,
-        'r.status IN (%Ls)',
+        'r.status in (%Ls)',
+        $this->statuses);
+    }
+
+    if ($this->isOpen !== null) {
+      if ($this->isOpen) {
+        $statuses = DifferentialLegacyQuery::getModernValues(
+          DifferentialLegacyQuery::STATUS_OPEN);
+      } else {
+        $statuses = DifferentialLegacyQuery::getModernValues(
+          DifferentialLegacyQuery::STATUS_CLOSED);
+      }
+      $where[] = qsprintf(
+        $conn_r,
+        'r.status in (%Ls)',
         $statuses);
     }
 
@@ -751,21 +754,13 @@ final class DifferentialRevisionQuery
   }
 
   public function getOrderableColumns() {
-    $primary = ($this->buildingGlobalOrder ? null : 'r');
-
     return array(
-      'id' => array(
-        'table' => $primary,
-        'column' => 'id',
-        'type' => 'int',
-        'unique' => true,
-      ),
       'updated' => array(
-        'table' => $primary,
+        'table' => $this->getPrimaryTableAlias(),
         'column' => 'dateModified',
         'type' => 'int',
       ),
-    );
+    ) + parent::getOrderableColumns();
   }
 
   protected function getPagingValueMap($cursor, array $keys) {

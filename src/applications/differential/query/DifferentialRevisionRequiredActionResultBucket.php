@@ -37,6 +37,9 @@ final class DifferentialRevisionRequiredActionResultBucket
     // other project or package reviewers which they have authority over.
     $this->filterResigned($phids);
 
+    // We also throw away draft revisions which you aren't the author of.
+    $this->filterOtherDrafts($phids);
+
     $groups = array();
 
     $groups[] = $this->newGroup()
@@ -60,6 +63,11 @@ final class DifferentialRevisionRequiredActionResultBucket
       ->setName(pht('Ready to Update'))
       ->setNoDataString(pht('No revisions are waiting for updates.'))
       ->setObjects($this->filterShouldUpdate($phids));
+
+    $groups[] = $this->newGroup()
+      ->setName(pht('Drafts'))
+      ->setNoDataString(pht('You have no draft revisions.'))
+      ->setObjects($this->filterDrafts($phids));
 
     $groups[] = $this->newGroup()
       ->setName(pht('Waiting on Review'))
@@ -115,6 +123,14 @@ final class DifferentialRevisionRequiredActionResultBucket
     $reviewing = array(
       DifferentialReviewerStatus::STATUS_ADDED,
       DifferentialReviewerStatus::STATUS_COMMENTED,
+
+      // If an author has used "Request Review" to put an accepted revision
+      // back into the "Needs Review" state, include "Accepted" reviewers
+      // whose reviews have been voided in the "Should Review" bucket.
+
+      // If we don't do this, they end up in "Waiting on Other Reviewers",
+      // even if there are no other reviewers.
+      DifferentialReviewerStatus::STATUS_ACCEPTED,
     );
     $reviewing = array_fuse($reviewing);
 
@@ -122,7 +138,7 @@ final class DifferentialRevisionRequiredActionResultBucket
 
     $results = array();
     foreach ($objects as $key => $object) {
-      if (!$this->hasReviewersWithStatus($object, $phids, $reviewing)) {
+      if (!$this->hasReviewersWithStatus($object, $phids, $reviewing, true)) {
         continue;
       }
 
@@ -151,9 +167,8 @@ final class DifferentialRevisionRequiredActionResultBucket
 
   private function filterShouldUpdate(array $phids) {
     $statuses = array(
-      ArcanistDifferentialRevisionStatus::NEEDS_REVISION,
-      ArcanistDifferentialRevisionStatus::CHANGES_PLANNED,
-      ArcanistDifferentialRevisionStatus::IN_PREPARATION,
+      DifferentialRevisionStatus::NEEDS_REVISION,
+      DifferentialRevisionStatus::CHANGES_PLANNED,
     );
     $statuses = array_fuse($statuses);
 
@@ -161,7 +176,7 @@ final class DifferentialRevisionRequiredActionResultBucket
 
     $results = array();
     foreach ($objects as $key => $object) {
-      if (empty($statuses[$object->getStatus()])) {
+      if (empty($statuses[$object->getModernRevisionStatus()])) {
         continue;
       }
 
@@ -190,10 +205,9 @@ final class DifferentialRevisionRequiredActionResultBucket
 
   private function filterWaitingOnAuthors(array $phids) {
     $statuses = array(
-      ArcanistDifferentialRevisionStatus::ACCEPTED,
-      ArcanistDifferentialRevisionStatus::NEEDS_REVISION,
-      ArcanistDifferentialRevisionStatus::CHANGES_PLANNED,
-      ArcanistDifferentialRevisionStatus::IN_PREPARATION,
+      DifferentialRevisionStatus::ACCEPTED,
+      DifferentialRevisionStatus::NEEDS_REVISION,
+      DifferentialRevisionStatus::CHANGES_PLANNED,
     );
     $statuses = array_fuse($statuses);
 
@@ -201,7 +215,7 @@ final class DifferentialRevisionRequiredActionResultBucket
 
     $results = array();
     foreach ($objects as $key => $object) {
-      if (empty($statuses[$object->getStatus()])) {
+      if (empty($statuses[$object->getModernRevisionStatus()])) {
         continue;
       }
 
@@ -239,6 +253,38 @@ final class DifferentialRevisionRequiredActionResultBucket
     $results = array();
     foreach ($objects as $key => $object) {
       if (!$this->hasReviewersWithStatus($object, $phids, $resigned)) {
+        continue;
+      }
+
+      $results[$key] = $object;
+      unset($this->objects[$key]);
+    }
+
+    return $results;
+  }
+
+  private function filterOtherDrafts(array $phids) {
+    $objects = $this->getRevisionsNotAuthored($this->objects, $phids);
+
+    $results = array();
+    foreach ($objects as $key => $object) {
+      if (!$object->isDraft()) {
+        continue;
+      }
+
+      $results[$key] = $object;
+      unset($this->objects[$key]);
+    }
+
+    return $results;
+  }
+
+  private function filterDrafts(array $phids) {
+    $objects = $this->getRevisionsAuthored($this->objects, $phids);
+
+    $results = array();
+    foreach ($objects as $key => $object) {
+      if (!$object->isDraft()) {
         continue;
       }
 
