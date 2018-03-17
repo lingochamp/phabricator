@@ -6,14 +6,11 @@ final class ManiphestTaskStatusTransaction
   const TRANSACTIONTYPE = 'status';
 
   public function generateOldValue($object) {
-    if ($this->isNewObject()) {
-      return null;
-    }
     return $object->getStatus();
   }
 
   public function applyInternalEffects($object, $value) {
-    $object->setStatus($value);
+    $this->updateStatus($object, $value);
   }
 
   public function shouldHide() {

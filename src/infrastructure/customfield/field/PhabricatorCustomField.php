@@ -34,6 +34,8 @@ abstract class PhabricatorCustomField extends Phobject {
   const ROLE_CONDUIT                  = 'conduit';
   const ROLE_HERALD                   = 'herald';
   const ROLE_EDITENGINE = 'EditEngine';
+  const ROLE_HERALDACTION = 'herald.action';
+  const ROLE_EXPORT = 'export';
 
 
 /* -(  Building Applications with Custom Fields  )--------------------------- */
@@ -293,9 +295,13 @@ abstract class PhabricatorCustomField extends Phobject {
         return $this->shouldAppearInTransactionMail();
       case self::ROLE_HERALD:
         return $this->shouldAppearInHerald();
+      case self::ROLE_HERALDACTION:
+        return $this->shouldAppearInHeraldActions();
       case self::ROLE_EDITENGINE:
         return $this->shouldAppearInEditView() ||
                $this->shouldAppearInEditEngine();
+      case self::ROLE_EXPORT:
+        return $this->shouldAppearInDataExport();
       case self::ROLE_DEFAULT:
         return true;
       default:
@@ -1116,6 +1122,11 @@ abstract class PhabricatorCustomField extends Phobject {
       $field->setCustomFieldConduitParameterType($conduit_type);
     }
 
+    $bulk_type = $this->getBulkParameterType();
+    if ($bulk_type) {
+      $field->setCustomFieldBulkParameterType($bulk_type);
+    }
+
     return $field;
   }
 
@@ -1130,14 +1141,36 @@ abstract class PhabricatorCustomField extends Phobject {
       $conduit_only = false;
     }
 
+    $bulk_label = $this->getBulkEditLabel();
+
     return $this->newEditField()
       ->setKey($this->getFieldKey())
       ->setEditTypeKey($this->getModernFieldKey())
       ->setLabel($this->getFieldName())
+      ->setBulkEditLabel($bulk_label)
       ->setDescription($this->getFieldDescription())
       ->setTransactionType($this->getApplicationTransactionType())
       ->setIsConduitOnly($conduit_only)
       ->setValue($this->getNewValueForApplicationTransactions());
+  }
+
+  protected function getBulkEditLabel() {
+    if ($this->proxy) {
+      return $this->proxy->getBulkEditLabel();
+    }
+
+    return pht('Set "%s" to', $this->getFieldName());
+  }
+
+  public function getBulkParameterType() {
+    return $this->newBulkParameterType();
+  }
+
+  protected function newBulkParameterType() {
+    if ($this->proxy) {
+      return $this->proxy->newBulkParameterType();
+    }
+    return null;
   }
 
   protected function getHTTPParameterType() {
@@ -1332,6 +1365,46 @@ abstract class PhabricatorCustomField extends Phobject {
   }
 
 
+/* -(  Data Export  )-------------------------------------------------------- */
+
+
+  public function shouldAppearInDataExport() {
+    if ($this->proxy) {
+      return $this->proxy->shouldAppearInDataExport();
+    }
+
+    try {
+      $this->newExportFieldType();
+      return true;
+    } catch (PhabricatorCustomFieldImplementationIncompleteException $ex) {
+      return false;
+    }
+  }
+
+  public function newExportField() {
+    if ($this->proxy) {
+      return $this->proxy->newExportField();
+    }
+
+    return $this->newExportFieldType()
+      ->setLabel($this->getFieldName());
+  }
+
+  public function newExportData() {
+    if ($this->proxy) {
+      return $this->proxy->newExportData();
+    }
+    throw new PhabricatorCustomFieldImplementationIncompleteException($this);
+  }
+
+  protected function newExportFieldType() {
+    if ($this->proxy) {
+      return $this->proxy->newExportFieldType();
+    }
+    throw new PhabricatorCustomFieldImplementationIncompleteException($this);
+  }
+
+
 /* -(  Conduit  )------------------------------------------------------------ */
 
 
@@ -1475,5 +1548,57 @@ abstract class PhabricatorCustomField extends Phobject {
     return null;
   }
 
+
+  public function shouldAppearInHeraldActions() {
+    if ($this->proxy) {
+      return $this->proxy->shouldAppearInHeraldActions();
+    }
+    return false;
+  }
+
+
+  public function getHeraldActionName() {
+    if ($this->proxy) {
+      return $this->proxy->getHeraldActionName();
+    }
+
+    return null;
+  }
+
+
+  public function getHeraldActionStandardType() {
+    if ($this->proxy) {
+      return $this->proxy->getHeraldActionStandardType();
+    }
+
+    return null;
+  }
+
+
+  public function getHeraldActionDescription($value) {
+    if ($this->proxy) {
+      return $this->proxy->getHeraldActionDescription($value);
+    }
+
+    return null;
+  }
+
+
+  public function getHeraldActionEffectDescription($value) {
+    if ($this->proxy) {
+      return $this->proxy->getHeraldActionEffectDescription($value);
+    }
+
+    return null;
+  }
+
+
+  public function getHeraldActionDatasource() {
+    if ($this->proxy) {
+      return $this->proxy->getHeraldActionDatasource();
+    }
+
+    return null;
+  }
 
 }

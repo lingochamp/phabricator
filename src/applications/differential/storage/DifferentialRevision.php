@@ -20,7 +20,6 @@ final class DifferentialRevision extends DifferentialDAO
     PhabricatorDraftInterface {
 
   protected $title = '';
-  protected $originalTitle;
   protected $status;
 
   protected $summary = '';
@@ -60,6 +59,9 @@ final class DifferentialRevision extends DifferentialDAO
 
   const PROPERTY_CLOSED_FROM_ACCEPTED = 'wasAcceptedBeforeClose';
   const PROPERTY_DRAFT_HOLD = 'draft.hold';
+  const PROPERTY_HAS_BROADCAST = 'draft.broadcast';
+  const PROPERTY_LINES_ADDED = 'lines.added';
+  const PROPERTY_LINES_REMOVED = 'lines.removed';
 
   public static function initializeNewRevision(PhabricatorUser $actor) {
     $app = id(new PhabricatorApplicationQuery())
@@ -95,7 +97,6 @@ final class DifferentialRevision extends DifferentialDAO
       ),
       self::CONFIG_COLUMN_SCHEMA => array(
         'title' => 'text255',
-        'originalTitle' => 'text255',
         'status' => 'text32',
         'summary' => 'text',
         'testPlan' => 'text',
@@ -150,14 +151,6 @@ final class DifferentialRevision extends DifferentialDAO
 
   public function getURI() {
     return '/'.$this->getMonogram();
-  }
-
-  public function setTitle($title) {
-    $this->title = $title;
-    if (!$this->getID()) {
-      $this->originalTitle = $title;
-    }
-    return $this;
   }
 
   public function loadIDsByCommitPHIDs($phids) {
@@ -590,6 +583,10 @@ final class DifferentialRevision extends DifferentialDAO
     return $this;
   }
 
+  public function hasAttachedReviewers() {
+    return ($this->reviewerStatus !== self::ATTACHABLE);
+  }
+
   public function getReviewerPHIDs() {
     $reviewers = $this->getReviewers();
     return mpull($reviewers, 'getReviewerPHID');
@@ -719,12 +716,37 @@ final class DifferentialRevision extends DifferentialDAO
     return $this->setProperty(self::PROPERTY_DRAFT_HOLD, $hold);
   }
 
+  public function getHasBroadcast() {
+    return $this->getProperty(self::PROPERTY_HAS_BROADCAST, false);
+  }
+
+  public function setHasBroadcast($has_broadcast) {
+    return $this->setProperty(self::PROPERTY_HAS_BROADCAST, $has_broadcast);
+  }
+
+  public function setAddedLineCount($count) {
+    return $this->setProperty(self::PROPERTY_LINES_ADDED, $count);
+  }
+
+  public function getAddedLineCount() {
+    return $this->getProperty(self::PROPERTY_LINES_ADDED);
+  }
+
+  public function setRemovedLineCount($count) {
+    return $this->setProperty(self::PROPERTY_LINES_REMOVED, $count);
+  }
+
+  public function getRemovedLineCount() {
+    return $this->getProperty(self::PROPERTY_LINES_REMOVED);
+  }
+
   public function loadActiveBuilds(PhabricatorUser $viewer) {
     $diff = $this->getActiveDiff();
 
+    // NOTE: We can't use `withContainerPHIDs()` here because the container
+    // update in Harbormaster is not synchronous.
     $buildables = id(new HarbormasterBuildableQuery())
       ->setViewer($viewer)
-      ->withContainerPHIDs(array($this->getPHID()))
       ->withBuildablePHIDs(array($diff->getPHID()))
       ->withManualBuildables(false)
       ->execute();
@@ -803,9 +825,15 @@ final class DifferentialRevision extends DifferentialDAO
     }
 
     foreach ($reviewers as $reviewer) {
-      if ($reviewer->getReviewerPHID() == $phid) {
-        return true;
+      if ($reviewer->getReviewerPHID() !== $phid) {
+        continue;
       }
+
+      if ($reviewer->isResigned()) {
+        continue;
+      }
+
+      return true;
     }
 
     return false;

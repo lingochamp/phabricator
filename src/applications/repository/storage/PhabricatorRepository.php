@@ -1627,8 +1627,7 @@ final class PhabricatorRepository extends PhabricatorRepositoryDAO
       return false;
     }
 
-    // TODO: Unprototype this feature.
-    if (!PhabricatorEnv::getEnvConfig('phabricator.show-prototypes')) {
+    if (!PhabricatorEnv::getEnvConfig('diffusion.allow-git-lfs')) {
       return false;
     }
 
@@ -1671,6 +1670,18 @@ final class PhabricatorRepository extends PhabricatorRepositoryDAO
 
   public function shouldAllowDangerousChanges() {
     return (bool)$this->getDetail('allow-dangerous-changes');
+  }
+
+  public function canAllowEnormousChanges() {
+    if (!$this->isHosted()) {
+      return false;
+    }
+
+    return true;
+  }
+
+  public function shouldAllowEnormousChanges() {
+    return (bool)$this->getDetail('allow-enormous-changes');
   }
 
   public function writeStatusMessage(

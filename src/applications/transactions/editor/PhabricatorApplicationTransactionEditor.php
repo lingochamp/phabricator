@@ -48,6 +48,7 @@ abstract class PhabricatorApplicationTransactionEditor
   private $mentionedPHIDs;
   private $continueOnNoEffect;
   private $continueOnMissingFields;
+  private $raiseWarnings;
   private $parentMessageID;
   private $heraldAdapter;
   private $heraldTranscript;
@@ -59,7 +60,6 @@ abstract class PhabricatorApplicationTransactionEditor
   private $isHeraldEditor;
   private $isInverseEdgeEditor;
   private $actingAsPHID;
-  private $disableEmail;
 
   private $heraldEmailPHIDs = array();
   private $heraldForcedEmailPHIDs = array();
@@ -68,7 +68,21 @@ abstract class PhabricatorApplicationTransactionEditor
   private $mailCCPHIDs = array();
   private $feedNotifyPHIDs = array();
   private $feedRelatedPHIDs = array();
+  private $feedShouldPublish = false;
+  private $mailShouldSend = false;
   private $modularTypes;
+  private $silent;
+  private $mustEncrypt;
+  private $stampTemplates = array();
+  private $mailStamps = array();
+  private $oldTo = array();
+  private $oldCC = array();
+  private $mailRemovedPHIDs = array();
+  private $mailUnexpandablePHIDs = array();
+  private $mailMutedPHIDs = array();
+  private $webhookMap = array();
+
+  private $transactionQueue = array();
 
   const STORAGE_ENCODING_BINARY = 'binary';
 
@@ -172,7 +186,7 @@ abstract class PhabricatorApplicationTransactionEditor
     return $this->isNewObject;
   }
 
-  protected function getMentionedPHIDs() {
+  public function getMentionedPHIDs() {
     return $this->mentionedPHIDs;
   }
 
@@ -183,6 +197,38 @@ abstract class PhabricatorApplicationTransactionEditor
 
   public function getIsPreview() {
     return $this->isPreview;
+  }
+
+  public function setIsSilent($silent) {
+    $this->silent = $silent;
+    return $this;
+  }
+
+  public function getIsSilent() {
+    return $this->silent;
+  }
+
+  public function getMustEncrypt() {
+    return $this->mustEncrypt;
+  }
+
+  public function getHeraldRuleMonograms() {
+    // Convert the stored "<123>, <456>" string into a list: "H123", "H456".
+    $list = $this->heraldHeader;
+    $list = preg_split('/[, ]+/', $list);
+
+    foreach ($list as $key => $item) {
+      $item = trim($item, '<>');
+
+      if (!is_numeric($item)) {
+        unset($list[$key]);
+        continue;
+      }
+
+      $list[$key] = 'H'.$item;
+    }
+
+    return $list;
   }
 
   public function setIsInverseEdgeEditor($is_inverse_edge_editor) {
@@ -201,21 +247,6 @@ abstract class PhabricatorApplicationTransactionEditor
 
   public function getIsHeraldEditor() {
     return $this->isHeraldEditor;
-  }
-
-  /**
-   * Prevent this editor from generating email when applying transactions.
-   *
-   * @param bool  True to disable email.
-   * @return this
-   */
-  public function setDisableEmail($disable_email) {
-    $this->disableEmail = $disable_email;
-    return $this;
-  }
-
-  public function getDisableEmail() {
-    return $this->disableEmail;
   }
 
   public function setUnmentionablePHIDMap(array $map) {
@@ -241,6 +272,15 @@ abstract class PhabricatorApplicationTransactionEditor
 
   public function getApplicationEmail() {
     return $this->applicationEmail;
+  }
+
+  public function setRaiseWarnings($raise_warnings) {
+    $this->raiseWarnings = $raise_warnings;
+    return $this;
+  }
+
+  public function getRaiseWarnings() {
+    return $this->raiseWarnings;
   }
 
   public function getTransactionTypesForObject($object) {
@@ -803,6 +843,10 @@ abstract class PhabricatorApplicationTransactionEditor
       $xaction->setObjectPHID($object->getPHID());
     }
 
+    if ($this->getIsSilent()) {
+      $xaction->setIsSilentTransaction(true);
+    }
+
     return $xaction;
   }
 
@@ -885,26 +929,31 @@ abstract class PhabricatorApplicationTransactionEditor
         throw new PhabricatorApplicationTransactionValidationException($errors);
       }
 
+      if ($this->raiseWarnings) {
+        $warnings = array();
+        foreach ($xactions as $xaction) {
+          if ($this->hasWarnings($object, $xaction)) {
+            $warnings[] = $xaction;
+          }
+        }
+        if ($warnings) {
+          throw new PhabricatorApplicationTransactionWarningException(
+            $warnings);
+        }
+      }
+
       $this->willApplyTransactions($object, $xactions);
 
       if ($object->getID()) {
-        foreach ($xactions as $xaction) {
+        $this->buildOldRecipientLists($object, $xactions);
 
-          // If any of the transactions require a read lock, hold one and
-          // reload the object. We need to do this fairly early so that the
-          // call to `adjustTransactionValues()` (which populates old values)
-          // is based on the synchronized state of the object, which may differ
-          // from the state when it was originally loaded.
+        $object->openTransaction();
+        $transaction_open = true;
 
-          if ($this->shouldReadLock($object, $xaction)) {
-            $object->openTransaction();
-            $object->beginReadLocking();
-            $transaction_open = true;
-            $read_locking = true;
-            $object->reload();
-            break;
-          }
-        }
+        $object->beginReadLocking();
+        $read_locking = true;
+
+        $object->reload();
       }
 
       if ($this->shouldApplyInitialEffects($object, $xactions)) {
@@ -915,66 +964,57 @@ abstract class PhabricatorApplicationTransactionEditor
       }
     }
 
-    if ($this->shouldApplyInitialEffects($object, $xactions)) {
-      $this->applyInitialEffects($object, $xactions);
-    }
-
-    foreach ($xactions as $xaction) {
-      $this->adjustTransactionValues($object, $xaction);
-    }
-
     try {
-      $xactions = $this->filterTransactions($object, $xactions);
-    } catch (Exception $ex) {
-      if ($read_locking) {
-        $object->endReadLocking();
+      if ($this->shouldApplyInitialEffects($object, $xactions)) {
+        $this->applyInitialEffects($object, $xactions);
       }
-      if ($transaction_open) {
-        $object->killTransaction();
-      }
-      throw $ex;
-    }
 
-    // TODO: Once everything is on EditEngine, just use getIsNewObject() to
-    // figure this out instead.
-    $mark_as_create = false;
-    $create_type = PhabricatorTransactions::TYPE_CREATE;
-    foreach ($xactions as $xaction) {
-      if ($xaction->getTransactionType() == $create_type) {
-        $mark_as_create = true;
-      }
-    }
-
-    if ($mark_as_create) {
       foreach ($xactions as $xaction) {
-        $xaction->setIsCreateTransaction(true);
+        $this->adjustTransactionValues($object, $xaction);
       }
-    }
 
-    // Now that we've merged, filtered, and combined transactions, check for
-    // required capabilities.
-    foreach ($xactions as $xaction) {
-      $this->requireCapabilities($object, $xaction);
-    }
+      $xactions = $this->filterTransactions($object, $xactions);
 
-    $xactions = $this->sortTransactions($xactions);
-    $file_phids = $this->extractFilePHIDs($object, $xactions);
+      // TODO: Once everything is on EditEngine, just use getIsNewObject() to
+      // figure this out instead.
+      $mark_as_create = false;
+      $create_type = PhabricatorTransactions::TYPE_CREATE;
+      foreach ($xactions as $xaction) {
+        if ($xaction->getTransactionType() == $create_type) {
+          $mark_as_create = true;
+        }
+      }
 
-    if ($is_preview) {
-      $this->loadHandles($xactions);
-      return $xactions;
-    }
+      if ($mark_as_create) {
+        foreach ($xactions as $xaction) {
+          $xaction->setIsCreateTransaction(true);
+        }
+      }
 
-    $comment_editor = id(new PhabricatorApplicationTransactionCommentEditor())
-      ->setActor($actor)
-      ->setActingAsPHID($this->getActingAsPHID())
-      ->setContentSource($this->getContentSource());
+      // Now that we've merged, filtered, and combined transactions, check for
+      // required capabilities.
+      foreach ($xactions as $xaction) {
+        $this->requireCapabilities($object, $xaction);
+      }
 
-    if (!$transaction_open) {
-      $object->openTransaction();
-    }
+      $xactions = $this->sortTransactions($xactions);
+      $file_phids = $this->extractFilePHIDs($object, $xactions);
 
-    try {
+      if ($is_preview) {
+        $this->loadHandles($xactions);
+        return $xactions;
+      }
+
+      $comment_editor = id(new PhabricatorApplicationTransactionCommentEditor())
+        ->setActor($actor)
+        ->setActingAsPHID($this->getActingAsPHID())
+        ->setContentSource($this->getContentSource());
+
+      if (!$transaction_open) {
+        $object->openTransaction();
+        $transaction_open = true;
+      }
+
       foreach ($xactions as $xaction) {
         $this->applyInternalEffects($object, $xaction);
       }
@@ -997,7 +1037,31 @@ abstract class PhabricatorApplicationTransactionEditor
           $xaction->setPHID($xaction->generatePHID());
           $comment_editor->applyEdit($xaction, $xaction->getComment());
         } else {
-          $xaction->save();
+
+          // TODO: This is a transitional hack to let us migrate edge
+          // transactions to a more efficient storage format. For now, we're
+          // going to write a new slim format to the database but keep the old
+          // bulky format on the objects so we don't have to upgrade all the
+          // edit logic to the new format yet. See T13051.
+
+          $edge_type = PhabricatorTransactions::TYPE_EDGE;
+          if ($xaction->getTransactionType() == $edge_type) {
+            $bulky_old = $xaction->getOldValue();
+            $bulky_new = $xaction->getNewValue();
+
+            $record = PhabricatorEdgeChangeRecord::newFromTransaction($xaction);
+            $slim_old = $record->getModernOldEdgeTransactionData();
+            $slim_new = $record->getModernNewEdgeTransactionData();
+
+            $xaction->setOldValue($slim_old);
+            $xaction->setNewValue($slim_new);
+            $xaction->save();
+
+            $xaction->setOldValue($bulky_old);
+            $xaction->setNewValue($bulky_new);
+          } else {
+            $xaction->save();
+          }
         }
       }
 
@@ -1010,14 +1074,27 @@ abstract class PhabricatorApplicationTransactionEditor
       }
 
       $xactions = $this->applyFinalEffects($object, $xactions);
+
       if ($read_locking) {
         $object->endReadLocking();
         $read_locking = false;
       }
 
-      $object->saveTransaction();
+      if ($transaction_open) {
+        $object->saveTransaction();
+        $transaction_open = false;
+      }
     } catch (Exception $ex) {
-      $object->killTransaction();
+      if ($read_locking) {
+        $object->endReadLocking();
+        $read_locking = false;
+      }
+
+      if ($transaction_open) {
+        $object->killTransaction();
+        $transaction_open = false;
+      }
+
       throw $ex;
     }
 
@@ -1043,13 +1120,6 @@ abstract class PhabricatorApplicationTransactionEditor
       // We are the Herald editor, so stop work here and return the updated
       // transactions.
       return $xactions;
-    } else if ($this->getIsInverseEdgeEditor()) {
-      // If we're applying inverse edge transactions, don't trigger Herald.
-      // From a product perspective, the current set of inverse edges (most
-      // often, mentions) aren't things users would expect to trigger Herald.
-      // From a technical perspective, objects loaded by the inverse editor may
-      // not have enough data to execute rules. At least for now, just stop
-      // Herald from executing when applying inverse edges.
     } else if ($this->shouldApplyHeraldRules($object, $xactions)) {
       // We are not the Herald editor, so try to apply Herald rules.
       $herald_xactions = $this->applyHeraldRules($object, $xactions);
@@ -1103,6 +1173,7 @@ abstract class PhabricatorApplicationTransactionEditor
       $adapter = $this->getHeraldAdapter();
       $this->heraldEmailPHIDs = $adapter->getEmailPHIDs();
       $this->heraldForcedEmailPHIDs = $adapter->getForcedEmailPHIDs();
+      $this->webhookMap = $adapter->getWebhookMap();
     }
 
     $xactions = $this->didApplyTransactions($object, $xactions);
@@ -1149,16 +1220,41 @@ abstract class PhabricatorApplicationTransactionEditor
     // Editors need to pass into workers.
     $object = $this->willPublish($object, $xactions);
 
-    if (!$this->getDisableEmail()) {
+    if (!$this->getIsSilent()) {
       if ($this->shouldSendMail($object, $xactions)) {
+        $this->mailShouldSend = true;
         $this->mailToPHIDs = $this->getMailTo($object);
         $this->mailCCPHIDs = $this->getMailCC($object);
-      }
-    }
+        $this->mailUnexpandablePHIDs = $this->newMailUnexpandablePHIDs($object);
 
-    if ($this->shouldPublishFeedStory($object, $xactions)) {
-      $this->feedRelatedPHIDs = $this->getFeedRelatedPHIDs($object, $xactions);
-      $this->feedNotifyPHIDs = $this->getFeedNotifyPHIDs($object, $xactions);
+        // Add any recipients who were previously on the notification list
+        // but were removed by this change.
+        $this->applyOldRecipientLists();
+
+        if ($object instanceof PhabricatorSubscribableInterface) {
+          $this->mailMutedPHIDs = PhabricatorEdgeQuery::loadDestinationPHIDs(
+            $object->getPHID(),
+            PhabricatorMutedByEdgeType::EDGECONST);
+        } else {
+          $this->mailMutedPHIDs = array();
+        }
+
+        $mail_xactions = $this->getTransactionsForMail($object, $xactions);
+        $stamps = $this->newMailStamps($object, $xactions);
+        foreach ($stamps as $stamp) {
+          $this->mailStamps[] = $stamp->toDictionary();
+        }
+      }
+
+      if ($this->shouldPublishFeedStory($object, $xactions)) {
+        $this->feedShouldPublish = true;
+        $this->feedRelatedPHIDs = $this->getFeedRelatedPHIDs(
+          $object,
+          $xactions);
+        $this->feedNotifyPHIDs = $this->getFeedNotifyPHIDs(
+          $object,
+          $xactions);
+      }
     }
 
     PhabricatorWorker::scheduleTask(
@@ -1173,6 +1269,8 @@ abstract class PhabricatorApplicationTransactionEditor
         'objectPHID' => $object->getPHID(),
         'priority' => PhabricatorWorker::PRIORITY_ALERTS,
       ));
+
+    $this->flushTransactionQueue($object);
 
     return $xactions;
   }
@@ -1198,10 +1296,8 @@ abstract class PhabricatorApplicationTransactionEditor
     $this->object = $object;
 
     $messages = array();
-    if (!$this->getDisableEmail()) {
-      if ($this->shouldSendMail($object, $xactions)) {
-        $messages = $this->buildMail($object, $xactions);
-      }
+    if ($this->mailShouldSend) {
+      $messages = $this->buildMail($object, $xactions);
     }
 
     if ($this->supportsSearch()) {
@@ -1212,8 +1308,7 @@ abstract class PhabricatorApplicationTransactionEditor
         ));
     }
 
-    if ($this->shouldPublishFeedStory($object, $xactions)) {
-
+    if ($this->feedShouldPublish) {
       $mailed = array();
       foreach ($messages as $mail) {
         foreach ($mail->buildRecipientList() as $phid) {
@@ -1231,52 +1326,14 @@ abstract class PhabricatorApplicationTransactionEditor
       $mail->save();
     }
 
+    $this->queueWebhooks($object, $xactions);
+
     return $xactions;
   }
 
   protected function didApplyTransactions($object, array $xactions) {
     // Hook for subclasses.
     return $xactions;
-  }
-
-
-  /**
-   * Determine if the editor should hold a read lock on the object while
-   * applying a transaction.
-   *
-   * If the editor does not hold a lock, two editors may read an object at the
-   * same time, then apply their changes without any synchronization. For most
-   * transactions, this does not matter much. However, it is important for some
-   * transactions. For example, if an object has a transaction count on it, both
-   * editors may read the object with `count = 23`, then independently update it
-   * and save the object with `count = 24` twice. This will produce the wrong
-   * state: the object really has 25 transactions, but the count is only 24.
-   *
-   * Generally, transactions fall into one of four buckets:
-   *
-   *   - Append operations: Actions like adding a comment to an object purely
-   *     add information to its state, and do not depend on the current object
-   *     state in any way. These transactions never need to hold locks.
-   *   - Overwrite operations: Actions like changing the title or description
-   *     of an object replace the current value with a new value, so the end
-   *     state is consistent without a lock. We currently do not lock these
-   *     transactions, although we may in the future.
-   *   - Edge operations: Edge and subscription operations have internal
-   *     synchronization which limits the damage race conditions can cause.
-   *     We do not currently lock these transactions, although we may in the
-   *     future.
-   *   - Update operations: Actions like incrementing a count on an object.
-   *     These operations generally should use locks, unless it is not
-   *     important that the state remain consistent in the presence of races.
-   *
-   * @param   PhabricatorLiskDAO  Object being updated.
-   * @param   PhabricatorApplicationTransaction Transaction being applied.
-   * @return  bool                True to synchronize the edit with a lock.
-   */
-  protected function shouldReadLock(
-    PhabricatorLiskDAO $object,
-    PhabricatorApplicationTransaction $xaction) {
-    return false;
   }
 
   private function loadHandles(array $xactions) {
@@ -2497,7 +2554,13 @@ abstract class PhabricatorApplicationTransactionEditor
     $email_cc = $this->mailCCPHIDs;
     $email_cc = array_merge($email_cc, $this->heraldEmailPHIDs);
 
+    $unexpandable = $this->mailUnexpandablePHIDs;
+    if (!is_array($unexpandable)) {
+      $unexpandable = array();
+    }
+
     $targets = $this->buildReplyHandler($object)
+      ->setUnexpandablePHIDs($unexpandable)
       ->getMailTargets($email_to, $email_cc);
 
     // Set this explicitly before we start swapping out the effective actor.
@@ -2518,6 +2581,14 @@ abstract class PhabricatorApplicationTransactionEditor
         $this->loadHandles($xactions);
 
         $mail = $this->buildMailForTarget($object, $xactions, $target);
+
+        if ($mail) {
+          if ($this->mustEncrypt) {
+            $mail
+              ->setMustEncrypt(true)
+              ->setMustEncryptReasons($this->mustEncrypt);
+          }
+        }
       } catch (Exception $ex) {
         $caught = $ex;
       }
@@ -2537,6 +2608,12 @@ abstract class PhabricatorApplicationTransactionEditor
     $this->runHeraldMailRules($messages);
 
     return $messages;
+  }
+
+  protected function getTransactionsForMail(
+    PhabricatorLiskDAO $object,
+    array $xactions) {
+    return $xactions;
   }
 
   private function buildMailForTarget(
@@ -2559,17 +2636,25 @@ abstract class PhabricatorApplicationTransactionEditor
       return null;
     }
 
-    $mail = $this->buildMailTemplate($object);
-    $body = $this->buildMailBody($object, $xactions);
+    $mail_xactions = $this->getTransactionsForMail($object, $xactions);
 
-    $mail_tags = $this->getMailTags($object, $xactions);
-    $action = $this->getMailAction($object, $xactions);
+    $mail = $this->buildMailTemplate($object);
+    $body = $this->buildMailBody($object, $mail_xactions);
+
+    $mail_tags = $this->getMailTags($object, $mail_xactions);
+    $action = $this->getMailAction($object, $mail_xactions);
+    $stamps = $this->generateMailStamps($object, $this->mailStamps);
 
     if (PhabricatorEnv::getEnvConfig('metamta.email-preferences')) {
       $this->addEmailPreferenceSectionToMailBody(
         $body,
         $object,
-        $xactions);
+        $mail_xactions);
+    }
+
+    $muted_phids = $this->mailMutedPHIDs;
+    if (!is_array($muted_phids)) {
+      $muted_phids = array();
     }
 
     $mail
@@ -2580,6 +2665,7 @@ abstract class PhabricatorApplicationTransactionEditor
       ->setThreadID($this->getMailThreadID($object), $this->getIsNewObject())
       ->setRelatedPHID($object->getPHID())
       ->setExcludeMailRecipientPHIDs($this->getExcludeMailRecipientPHIDs())
+      ->setMutedPHIDs($muted_phids)
       ->setForceHeraldMailRecipientPHIDs($this->heraldForcedEmailPHIDs)
       ->setMailTags($mail_tags)
       ->setIsBulk(true)
@@ -2600,6 +2686,18 @@ abstract class PhabricatorApplicationTransactionEditor
 
     if ($this->getParentMessageID()) {
       $mail->setParentMessageID($this->getParentMessageID());
+    }
+
+    // If we have stamps, attach the raw dictionary version (not the actual
+    // objects) to the mail so that debugging tools can see what we used to
+    // render the final list.
+    if ($this->mailStamps) {
+      $mail->setMailStampMetadata($this->mailStamps);
+    }
+
+    // If we have rendered stamps, attach them to the mail.
+    if ($stamps) {
+      $mail->setMailStamps($stamps);
     }
 
     return $target->willSendMail($mail);
@@ -2723,6 +2821,11 @@ abstract class PhabricatorApplicationTransactionEditor
   }
 
 
+  protected function newMailUnexpandablePHIDs(PhabricatorLiskDAO $object) {
+    return array();
+  }
+
+
   /**
    * @task mail
    */
@@ -2800,11 +2903,13 @@ abstract class PhabricatorApplicationTransactionEditor
     PhabricatorLiskDAO $object,
     array $xactions) {
 
-    $body = new PhabricatorMetaMTAMailBody();
-    $body->setViewer($this->requireActor());
+    $body = id(new PhabricatorMetaMTAMailBody())
+      ->setViewer($this->requireActor())
+      ->setContextObject($object);
 
     $this->addHeadersAndCommentsToMailBody($body, $xactions);
     $this->addCustomFieldsToMailBody($body, $object, $xactions);
+
     return $body;
   }
 
@@ -3079,6 +3184,18 @@ abstract class PhabricatorApplicationTransactionEditor
     $related_phids = $this->feedRelatedPHIDs;
     $subscribed_phids = $this->feedNotifyPHIDs;
 
+    // Remove muted users from the subscription list so they don't get
+    // notifications, either.
+    $muted_phids = $this->mailMutedPHIDs;
+    if (!is_array($muted_phids)) {
+      $muted_phids = array();
+    }
+    $subscribed_phids = array_fuse($subscribed_phids);
+    foreach ($muted_phids as $muted_phid) {
+      unset($subscribed_phids[$muted_phid]);
+    }
+    $subscribed_phids = array_values($subscribed_phids);
+
     $story_type = $this->getFeedStoryType();
     $story_data = $this->getFeedStoryData($object, $xactions);
 
@@ -3147,10 +3264,21 @@ abstract class PhabricatorApplicationTransactionEditor
     $adapter = $this->buildHeraldAdapter($object, $xactions)
       ->setContentSource($this->getContentSource())
       ->setIsNewObject($this->getIsNewObject())
+      ->setActingAsPHID($this->getActingAsPHID())
       ->setAppliedTransactions($xactions);
 
     if ($this->getApplicationEmail()) {
       $adapter->setApplicationEmail($this->getApplicationEmail());
+    }
+
+    // If this editor is operating in silent mode, tell Herald that we aren't
+    // going to send any mail. This allows it to skip "the first time this
+    // rule matches, send me an email" rules which would otherwise match even
+    // though we aren't going to send any mail.
+    if ($this->getIsSilent()) {
+      $adapter->setForbiddenAction(
+        HeraldMailableState::STATECONST,
+        HeraldCoreStateReasons::REASON_SILENT);
     }
 
     $xscript = HeraldEngine::loadAndApplyRules($adapter);
@@ -3159,11 +3287,35 @@ abstract class PhabricatorApplicationTransactionEditor
     $this->setHeraldTranscript($xscript);
 
     if ($adapter instanceof HarbormasterBuildableAdapterInterface) {
+      $buildable_phid = $adapter->getHarbormasterBuildablePHID();
+
       HarbormasterBuildable::applyBuildPlans(
-        $adapter->getHarbormasterBuildablePHID(),
+        $buildable_phid,
         $adapter->getHarbormasterContainerPHID(),
         $adapter->getQueuedHarbormasterBuildRequests());
+
+      // Whether we queued any builds or not, any automatic buildable for this
+      // object is now done preparing builds and can transition into a
+      // completed status.
+      $buildables = id(new HarbormasterBuildableQuery())
+        ->setViewer(PhabricatorUser::getOmnipotentUser())
+        ->withManualBuildables(false)
+        ->withBuildablePHIDs(array($buildable_phid))
+        ->execute();
+      foreach ($buildables as $buildable) {
+        // If this buildable has already moved beyond preparation, we don't
+        // need to nudge it again.
+        if (!$buildable->isPreparing()) {
+          continue;
+        }
+        $buildable->sendMessage(
+          $this->getActor(),
+          HarbormasterMessageType::BUILDABLE_BUILD,
+          true);
+      }
     }
+
+    $this->mustEncrypt = $adapter->getMustEncryptReasons();
 
     return array_merge(
       $this->didApplyHeraldRules($object, $adapter, $xscript),
@@ -3499,7 +3651,6 @@ abstract class PhabricatorApplicationTransactionEditor
   private function getAutomaticStateProperties() {
     return array(
       'parentMessageID',
-      'disableEmail',
       'isNewObject',
       'heraldEmailPHIDs',
       'heraldForcedEmailPHIDs',
@@ -3508,6 +3659,14 @@ abstract class PhabricatorApplicationTransactionEditor
       'mailCCPHIDs',
       'feedNotifyPHIDs',
       'feedRelatedPHIDs',
+      'feedShouldPublish',
+      'mailShouldSend',
+      'mustEncrypt',
+      'mailStamps',
+      'mailUnexpandablePHIDs',
+      'mailMutedPHIDs',
+      'webhookMap',
+      'silent',
     );
   }
 
@@ -3862,6 +4021,307 @@ abstract class PhabricatorApplicationTransactionEditor
 
   public function getCreateObjectTitleForFeed($author, $object) {
     return pht('%s created an object: %s.', $author, $object);
+  }
+
+/* -(  Queue  )-------------------------------------------------------------- */
+
+  protected function queueTransaction(
+    PhabricatorApplicationTransaction $xaction) {
+    $this->transactionQueue[] = $xaction;
+    return $this;
+  }
+
+  private function flushTransactionQueue($object) {
+    if (!$this->transactionQueue) {
+      return;
+    }
+
+    $xactions = $this->transactionQueue;
+    $this->transactionQueue = array();
+
+    $editor = $this->newQueueEditor();
+
+    return $editor->applyTransactions($object, $xactions);
+  }
+
+  private function newQueueEditor() {
+    $editor = id(newv(get_class($this), array()))
+      ->setActor($this->getActor())
+      ->setContentSource($this->getContentSource())
+      ->setContinueOnNoEffect($this->getContinueOnNoEffect())
+      ->setContinueOnMissingFields($this->getContinueOnMissingFields())
+      ->setIsSilent($this->getIsSilent());
+
+    if ($this->actingAsPHID !== null) {
+      $editor->setActingAsPHID($this->actingAsPHID);
+    }
+
+    return $editor;
+  }
+
+
+/* -(  Stamps  )------------------------------------------------------------- */
+
+
+  public function newMailStampTemplates($object) {
+    $actor = $this->getActor();
+
+    $templates = array();
+
+    $extensions = $this->newMailExtensions($object);
+    foreach ($extensions as $extension) {
+      $stamps = $extension->newMailStampTemplates($object);
+      foreach ($stamps as $stamp) {
+        $key = $stamp->getKey();
+        if (isset($templates[$key])) {
+          throw new Exception(
+            pht(
+              'Mail extension ("%s") defines a stamp template with the '.
+              'same key ("%s") as another template. Each stamp template '.
+              'must have a unique key.',
+              get_class($extension),
+              $key));
+        }
+
+        $stamp->setViewer($actor);
+
+        $templates[$key] = $stamp;
+      }
+    }
+
+    return $templates;
+  }
+
+  final public function getMailStamp($key) {
+    if (!isset($this->stampTemplates)) {
+      throw new PhutilInvalidStateException('newMailStampTemplates');
+    }
+
+    if (!isset($this->stampTemplates[$key])) {
+      throw new Exception(
+        pht(
+          'Editor ("%s") has no mail stamp template with provided key ("%s").',
+          get_class($this),
+          $key));
+    }
+
+    return $this->stampTemplates[$key];
+  }
+
+  private function newMailStamps($object, array $xactions) {
+    $actor = $this->getActor();
+
+    $this->stampTemplates = $this->newMailStampTemplates($object);
+
+    $extensions = $this->newMailExtensions($object);
+    $stamps = array();
+    foreach ($extensions as $extension) {
+      $extension->newMailStamps($object, $xactions);
+    }
+
+    return $this->stampTemplates;
+  }
+
+  private function newMailExtensions($object) {
+    $actor = $this->getActor();
+
+    $all_extensions = PhabricatorMailEngineExtension::getAllExtensions();
+
+    $extensions = array();
+    foreach ($all_extensions as $key => $template) {
+      $extension = id(clone $template)
+        ->setViewer($actor)
+        ->setEditor($this);
+
+      if ($extension->supportsObject($object)) {
+        $extensions[$key] = $extension;
+      }
+    }
+
+    return $extensions;
+  }
+
+  private function generateMailStamps($object, $data) {
+    if (!$data || !is_array($data)) {
+      return null;
+    }
+
+    $templates = $this->newMailStampTemplates($object);
+    foreach ($data as $spec) {
+      if (!is_array($spec)) {
+        continue;
+      }
+
+      $key = idx($spec, 'key');
+      if (!isset($templates[$key])) {
+        continue;
+      }
+
+      $type = idx($spec, 'type');
+      if ($templates[$key]->getStampType() !== $type) {
+        continue;
+      }
+
+      $value = idx($spec, 'value');
+      $templates[$key]->setValueFromDictionary($value);
+    }
+
+    $results = array();
+    foreach ($templates as $template) {
+      $value = $template->getValueForRendering();
+
+      $rendered = $template->renderStamps($value);
+      if ($rendered === null) {
+        continue;
+      }
+
+      $rendered = (array)$rendered;
+      foreach ($rendered as $stamp) {
+        $results[] = $stamp;
+      }
+    }
+
+    natcasesort($results);
+
+    return $results;
+  }
+
+  public function getRemovedRecipientPHIDs() {
+    return $this->mailRemovedPHIDs;
+  }
+
+  private function buildOldRecipientLists($object, $xactions) {
+    // See T4776. Before we start making any changes, build a list of the old
+    // recipients. If a change removes a user from the recipient list for an
+    // object we still want to notify the user about that change. This allows
+    // them to respond if they didn't want to be removed.
+
+    if (!$this->shouldSendMail($object, $xactions)) {
+      return;
+    }
+
+    $this->oldTo = $this->getMailTo($object);
+    $this->oldCC = $this->getMailCC($object);
+
+    return $this;
+  }
+
+  private function applyOldRecipientLists() {
+    $actor_phid = $this->getActingAsPHID();
+
+    // If you took yourself off the recipient list (for example, by
+    // unsubscribing or resigning) assume that you know what you did and
+    // don't need to be notified.
+
+    // If you just moved from "To" to "Cc" (or vice versa), you're still a
+    // recipient so we don't need to add you back in.
+
+    $map = array_fuse($this->mailToPHIDs) + array_fuse($this->mailCCPHIDs);
+
+    foreach ($this->oldTo as $phid) {
+      if ($phid === $actor_phid) {
+        continue;
+      }
+
+      if (isset($map[$phid])) {
+        continue;
+      }
+
+      $this->mailToPHIDs[] = $phid;
+      $this->mailRemovedPHIDs[] = $phid;
+    }
+
+    foreach ($this->oldCC as $phid) {
+      if ($phid === $actor_phid) {
+        continue;
+      }
+
+      if (isset($map[$phid])) {
+        continue;
+      }
+
+      $this->mailCCPHIDs[] = $phid;
+      $this->mailRemovedPHIDs[] = $phid;
+    }
+
+    return $this;
+  }
+
+  private function queueWebhooks($object, array $xactions) {
+    $hook_viewer = PhabricatorUser::getOmnipotentUser();
+
+    $webhook_map = $this->webhookMap;
+    if (!is_array($webhook_map)) {
+      $webhook_map = array();
+    }
+
+    // Add any "Firehose" hooks to the list of hooks we're going to call.
+    $firehose_hooks = id(new HeraldWebhookQuery())
+      ->setViewer($hook_viewer)
+      ->withStatuses(
+        array(
+          HeraldWebhook::HOOKSTATUS_FIREHOSE,
+        ))
+      ->execute();
+    foreach ($firehose_hooks as $firehose_hook) {
+      // This is "the hook itself is the reason this hook is being called",
+      // since we're including it because it's configured as a firehose
+      // hook.
+      $hook_phid = $firehose_hook->getPHID();
+      $webhook_map[$hook_phid][] = $hook_phid;
+    }
+
+    if (!$webhook_map) {
+      return;
+    }
+
+    // NOTE: We're going to queue calls to disabled webhooks, they'll just
+    // immediately fail in the worker queue. This makes the behavior more
+    // visible.
+
+    $call_hooks = id(new HeraldWebhookQuery())
+      ->setViewer($hook_viewer)
+      ->withPHIDs(array_keys($webhook_map))
+      ->execute();
+
+    foreach ($call_hooks as $call_hook) {
+      $trigger_phids = idx($webhook_map, $call_hook->getPHID());
+
+      $request = HeraldWebhookRequest::initializeNewWebhookRequest($call_hook)
+        ->setObjectPHID($object->getPHID())
+        ->setTransactionPHIDs(mpull($xactions, 'getPHID'))
+        ->setTriggerPHIDs($trigger_phids)
+        ->setRetryMode(HeraldWebhookRequest::RETRY_FOREVER)
+        ->setIsSilentAction((bool)$this->getIsSilent())
+        ->setIsSecureAction((bool)$this->getMustEncrypt())
+        ->save();
+
+      $request->queueCall();
+    }
+  }
+
+  private function hasWarnings($object, $xaction) {
+    // TODO: For the moment, this is a very un-modular hack to support
+    // exactly one type of warning (mentioning users on a draft revision)
+    // that we want to show. See PHI433.
+
+    if (!($object instanceof DifferentialRevision)) {
+      return false;
+    }
+
+    if (!$object->isDraft()) {
+      return false;
+    }
+
+    $type = $xaction->getTransactionType();
+    if ($type != PhabricatorTransactions::TYPE_SUBSCRIBERS) {
+      return false;
+    }
+
+    // NOTE: This will currently warn even if you're only removing
+    // subscribers.
+
+    return true;
   }
 
 }

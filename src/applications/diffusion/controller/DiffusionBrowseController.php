@@ -593,6 +593,9 @@ final class DiffusionBrowseController extends DiffusionController {
       array(
         'class' => 'diffusion-source remarkup-code PhabricatorMonospaced',
         'sigil' => 'phabricator-source',
+        'meta' => array(
+          'uri' => $this->getLineNumberBaseURI(),
+        ),
       ),
       $rows);
 
@@ -658,6 +661,11 @@ final class DiffusionBrowseController extends DiffusionController {
       ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
       ->appendChild($corpus)
       ->addClass('diffusion-mobile-view')
+      ->addSigil('diffusion-file-content-view')
+      ->setMetadata(
+        array(
+          'path' => $this->getDiffusionRequest()->getPath(),
+        ))
       ->setCollapsed(true);
 
     $messages = array();
@@ -916,7 +924,8 @@ final class DiffusionBrowseController extends DiffusionController {
       ->setTag('a')
       ->setText($text)
       ->setHref($href)
-      ->setIcon($icon);
+      ->setIcon($icon)
+      ->setColor(PHUIButtonView::GREY);
   }
 
   private function buildDisplayRows(
@@ -946,6 +955,10 @@ final class DiffusionBrowseController extends DiffusionController {
       }
 
       foreach ($revision_ids as $commit_phid => $revision_id) {
+        // If the viewer can't actually see this revision, skip it.
+        if (!isset($revisions[$revision_id])) {
+          continue;
+        }
         $revision_map[$commit_map[$commit_phid]] = $revision_id;
       }
     }
@@ -1116,11 +1129,7 @@ final class DiffusionBrowseController extends DiffusionController {
 
     // NOTE: We're doing this manually because rendering is otherwise
     // dominated by URI generation for very large files.
-    $line_base = (string)$drequest->generateURI(
-      array(
-        'action'  => 'browse',
-        'stable'  => true,
-      ));
+    $line_base = $this->getLineNumberBaseURI();
 
     require_celerity_resource('aphront-tooltip-css');
     Javelin::initBehavior('phabricator-oncopy');
@@ -1803,10 +1812,17 @@ final class DiffusionBrowseController extends DiffusionController {
         // revision. We just render a blank for alignment.
         $style = null;
         $href = null;
+        $sigil = null;
+        $meta = null;
       } else {
         $src = $handles[$phid]->getImageURI();
         $style = 'background-image: url('.$src.');';
         $href = $handles[$phid]->getURI();
+        $sigil = 'has-tooltip';
+        $meta = array(
+          'tip' => $handles[$phid]->getName(),
+          'align' => 'E',
+        );
       }
 
       $links[$phid] = javelin_tag(
@@ -1815,11 +1831,8 @@ final class DiffusionBrowseController extends DiffusionController {
           'class' => 'diffusion-author-link',
           'style' => $style,
           'href' => $href,
-          'sigil' => 'has-tooltip',
-          'meta' => array(
-            'tip' => $handles[$phid]->getName(),
-            'align' => 'E',
-          ),
+          'sigil' => $sigil,
+          'meta' => $meta,
         ));
     }
 
@@ -1924,7 +1937,7 @@ final class DiffusionBrowseController extends DiffusionController {
 
     try {
       $file = $this->loadGitLFSFile($ref);
-      $data = $this->renderGitLFSButton();
+      $this->corpusButtons[] = $this->renderGitLFSButton();
     } catch (Exception $ex) {
       $severity = PHUIInfoView::SEVERITY_ERROR;
       $messages[] = pht('The data for this file could not be loaded.');
@@ -2025,4 +2038,13 @@ final class DiffusionBrowseController extends DiffusionController {
       ->setTable($history_table);
   }
 
+  private function getLineNumberBaseURI() {
+    $drequest = $this->getDiffusionRequest();
+
+    return (string)$drequest->generateURI(
+      array(
+        'action'  => 'browse',
+        'stable'  => true,
+      ));
+  }
 }

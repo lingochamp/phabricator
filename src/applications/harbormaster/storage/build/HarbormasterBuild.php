@@ -108,9 +108,7 @@ final class HarbormasterBuild extends HarbormasterDAO
   }
 
   public function isBuilding() {
-    return
-      $this->getBuildStatus() === HarbormasterBuildStatus::STATUS_PENDING ||
-      $this->getBuildStatus() === HarbormasterBuildStatus::STATUS_BUILDING;
+    return $this->getBuildStatusObject()->isBuilding();
   }
 
   public function isAutobuild() {
@@ -173,18 +171,25 @@ final class HarbormasterBuild extends HarbormasterDAO
   }
 
   public function isComplete() {
-    return in_array(
-      $this->getBuildStatus(),
-      HarbormasterBuildStatus::getCompletedStatusConstants());
+    return $this->getBuildStatusObject()->isComplete();
   }
 
   public function isPaused() {
-    return ($this->getBuildStatus() == HarbormasterBuildStatus::STATUS_PAUSED);
+    return $this->getBuildStatusObject()->isPaused();
+  }
+
+  public function isPassed() {
+    return $this->getBuildStatusObject()->isPassed();
   }
 
   public function getURI() {
     $id = $this->getID();
     return "/harbormaster/build/{$id}/";
+  }
+
+  protected function getBuildStatusObject() {
+    $status_key = $this->getBuildStatus();
+    return HarbormasterBuildStatus::newBuildStatusObject($status_key);
   }
 
 
@@ -435,6 +440,8 @@ final class HarbormasterBuild extends HarbormasterDAO
       'buildStatus' => array(
         'value' => $status,
         'name' => HarbormasterBuildStatus::getBuildStatusName($status),
+        'color.ansi' =>
+          HarbormasterBuildStatus::getBuildStatusANSIColor($status),
       ),
       'initiatorPHID' => nonempty($this->getInitiatorPHID(), null),
       'name' => $this->getName(),

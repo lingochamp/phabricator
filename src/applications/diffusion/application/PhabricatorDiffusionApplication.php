@@ -39,12 +39,6 @@ final class PhabricatorDiffusionApplication extends PhabricatorApplication {
     );
   }
 
-  public function getFactObjectsForAnalysis() {
-    return array(
-      new PhabricatorRepositoryCommit(),
-    );
-  }
-
   public function getRemarkupRules() {
     return array(
       new DiffusionCommitRemarkupRule(),
@@ -89,6 +83,7 @@ final class PhabricatorDiffusionApplication extends PhabricatorApplication {
         'edit/' => array(
           'activate/' => 'DiffusionRepositoryEditActivateController',
           'dangerous/' => 'DiffusionRepositoryEditDangerousController',
+          'enormous/' => 'DiffusionRepositoryEditEnormousController',
           'delete/' => 'DiffusionRepositoryEditDeleteController',
           'update/' => 'DiffusionRepositoryEditUpdateController',
           'testautomation/' => 'DiffusionRepositoryTestAutomationController',
@@ -120,8 +115,11 @@ final class PhabricatorDiffusionApplication extends PhabricatorApplication {
         $this->getEditRoutePattern('edit/') =>
           'DiffusionRepositoryEditController',
         'pushlog/' => array(
-          '(?:query/(?P<queryKey>[^/]+)/)?' => 'DiffusionPushLogListController',
+          $this->getQueryRoutePattern() => 'DiffusionPushLogListController',
           'view/(?P<id>\d+)/' => 'DiffusionPushEventViewController',
+        ),
+        'pulllog/' => array(
+          $this->getQueryRoutePattern() => 'DiffusionPullLogListController',
         ),
         '(?P<repositoryCallsign>[A-Z]+)' => $repository_routes,
         '(?P<repositoryID>[1-9]\d*)' => $repository_routes,
