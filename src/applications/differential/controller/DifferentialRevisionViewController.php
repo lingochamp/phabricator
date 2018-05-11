@@ -1,11 +1,41 @@
 <?php
 
-final class DifferentialRevisionViewController extends DifferentialController {
+final class DifferentialRevisionViewController
+  extends DifferentialController {
 
   private $revisionID;
+  private $changesetCount;
 
   public function shouldAllowPublic() {
     return true;
+  }
+
+  public function isLargeDiff() {
+    return ($this->getChangesetCount() > $this->getLargeDiffLimit());
+  }
+
+  public function isVeryLargeDiff() {
+    return ($this->getChangesetCount() > $this->getVeryLargeDiffLimit());
+  }
+
+  public function getLargeDiffLimit() {
+    return 100;
+  }
+
+  public function getVeryLargeDiffLimit() {
+    return 1000;
+  }
+
+  public function getChangesetCount() {
+    if ($this->changesetCount === null) {
+      throw new PhutilInvalidStateException('setChangesetCount');
+    }
+    return $this->changesetCount;
+  }
+
+  public function setChangesetCount($count) {
+    $this->changesetCount = $count;
+    return $this;
   }
 
   public function handleRequest(AphrontRequest $request) {
@@ -72,6 +102,8 @@ final class DifferentialRevisionViewController extends DifferentialController {
         $target,
         idx($diffs, $diff_vs),
         $repository);
+
+    $this->setChangesetCount(count($rendering_references));
 
     if ($request->getExists('download')) {
       return $this->buildRawDiffResponse(
@@ -140,17 +172,23 @@ final class DifferentialRevisionViewController extends DifferentialController {
 
     $request_uri = $request->getRequestURI();
 
-    $limit = 100;
     $large = $request->getStr('large');
-    if (count($changesets) > $limit && !$large) {
-      $count = count($changesets);
+
+    $large_warning =
+      ($this->isLargeDiff()) &&
+      (!$this->isVeryLargeDiff()) &&
+      (!$large);
+
+    if ($large_warning) {
+      $count = $this->getChangesetCount();
+
       $warning = new PHUIInfoView();
-      $warning->setTitle(pht('Very Large Diff'));
+      $warning->setTitle(pht('Large Diff'));
       $warning->setSeverity(PHUIInfoView::SEVERITY_WARNING);
       $warning->appendChild(hsprintf(
         '%s <strong>%s</strong>',
         pht(
-          'This diff is very large and affects %s files. '.
+          'This diff is large and affects %s files. '.
           'You may load each file individually or ',
           new PhutilNumber($count)),
         phutil_tag(
@@ -265,35 +303,53 @@ final class DifferentialRevisionViewController extends DifferentialController {
 
     $timeline->setQuoteRef($revision->getMonogram());
 
-    $changeset_view = id(new DifferentialChangesetListView())
-      ->setChangesets($changesets)
-      ->setVisibleChangesets($visible_changesets)
-      ->setStandaloneURI('/differential/changeset/')
-      ->setRawFileURIs(
-        '/differential/changeset/?view=old',
-        '/differential/changeset/?view=new')
-      ->setUser($viewer)
-      ->setDiff($target)
-      ->setRenderingReferences($rendering_references)
-      ->setVsMap($vs_map)
-      ->setWhitespace($whitespace)
-      ->setSymbolIndexes($symbol_indexes)
-      ->setTitle(pht('Diff %s', $target->getID()))
-      ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY);
+    if ($this->isVeryLargeDiff()) {
+      $messages = array();
+
+      $messages[] = pht(
+        'This very large diff affects more than %s files. Use the %s to '.
+        'browse changes.',
+        new PhutilNumber($this->getVeryLargeDiffLimit()),
+        phutil_tag(
+          'a',
+          array(
+            'href' => '/differential/diff/'.$target->getID().'/changesets/',
+          ),
+          phutil_tag('strong', array(), pht('Changeset List'))));
+
+      $changeset_view = id(new PHUIInfoView())
+        ->setErrors($messages);
+    } else {
+      $changeset_view = id(new DifferentialChangesetListView())
+        ->setChangesets($changesets)
+        ->setVisibleChangesets($visible_changesets)
+        ->setStandaloneURI('/differential/changeset/')
+        ->setRawFileURIs(
+          '/differential/changeset/?view=old',
+          '/differential/changeset/?view=new')
+        ->setUser($viewer)
+        ->setDiff($target)
+        ->setRenderingReferences($rendering_references)
+        ->setVsMap($vs_map)
+        ->setWhitespace($whitespace)
+        ->setSymbolIndexes($symbol_indexes)
+        ->setTitle(pht('Diff %s', $target->getID()))
+        ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY);
 
 
-    $revision_id = $revision->getID();
-    $inline_list_uri = "/revision/inlines/{$revision_id}/";
-    $inline_list_uri = $this->getApplicationURI($inline_list_uri);
-    $changeset_view->setInlineListURI($inline_list_uri);
+      $revision_id = $revision->getID();
+      $inline_list_uri = "/revision/inlines/{$revision_id}/";
+      $inline_list_uri = $this->getApplicationURI($inline_list_uri);
+      $changeset_view->setInlineListURI($inline_list_uri);
 
-    if ($repository) {
-      $changeset_view->setRepository($repository);
-    }
+      if ($repository) {
+        $changeset_view->setRepository($repository);
+      }
 
-    if (!$viewer_is_anonymous) {
-      $changeset_view->setInlineCommentControllerURI(
-        '/differential/comment/inline/edit/'.$revision->getID().'/');
+      if (!$viewer_is_anonymous) {
+        $changeset_view->setInlineCommentControllerURI(
+          '/differential/comment/inline/edit/'.$revision->getID().'/');
+      }
     }
 
     $broken_diffs = $this->loadHistoryDiffStatus($diffs);
@@ -312,7 +368,7 @@ final class DifferentialRevisionViewController extends DifferentialController {
       ->setLocalCommits(idx($props, 'local:commits'))
       ->setCommitsForLinks($commits_for_links);
 
-    if ($repository) {
+    if ($repository && !$this->isVeryLargeDiff()) {
       $other_revisions = $this->loadOtherRevisions(
         $changesets,
         $target,
@@ -326,27 +382,46 @@ final class DifferentialRevisionViewController extends DifferentialController {
       $other_view = $this->renderOtherRevisions($other_revisions);
     }
 
-    $this->buildPackageMaps($changesets);
+    if ($this->isVeryLargeDiff()) {
+      $toc_view = null;
 
-    $toc_view = $this->buildTableOfContents(
-      $changesets,
-      $visible_changesets,
-      $target->loadCoverageMap($viewer));
+      // When rendering a "very large" diff, we skip computation of owners
+      // that own no files because it is significantly expensive and not very
+      // valuable.
+      foreach ($revision->getReviewers() as $reviewer) {
+        // Give each reviewer a dummy nonempty value so the UI does not render
+        // the "(Owns No Changed Paths)" note. If that behavior becomes more
+        // sophisticated in the future, this behavior might also need to.
+        $reviewer->attachChangesets($changesets);
+      }
+    } else {
+      $this->buildPackageMaps($changesets);
 
-    // Attach changesets to each reviewer so we can show which Owners package
-    // reviewers own no files.
-    foreach ($revision->getReviewers() as $reviewer) {
-      $reviewer_phid = $reviewer->getReviewerPHID();
-      $reviewer_changesets = $this->getPackageChangesets($reviewer_phid);
-      $reviewer->attachChangesets($reviewer_changesets);
+      $toc_view = $this->buildTableOfContents(
+        $changesets,
+        $visible_changesets,
+        $target->loadCoverageMap($viewer));
+
+      // Attach changesets to each reviewer so we can show which Owners package
+      // reviewers own no files.
+      foreach ($revision->getReviewers() as $reviewer) {
+        $reviewer_phid = $reviewer->getReviewerPHID();
+        $reviewer_changesets = $this->getPackageChangesets($reviewer_phid);
+        $reviewer->attachChangesets($reviewer_changesets);
+      }
     }
 
-    $tab_group = id(new PHUITabGroupView())
-      ->addTab(
+    $tab_group = id(new PHUITabGroupView());
+
+    if ($toc_view) {
+      $tab_group->addTab(
         id(new PHUITabView())
           ->setName(pht('Files'))
           ->setKey('files')
-          ->appendChild($toc_view))
+          ->appendChild($toc_view));
+    }
+
+    $tab_group
       ->addTab(
         id(new PHUITabView())
           ->setName(pht('History'))
@@ -399,8 +474,18 @@ final class DifferentialRevisionViewController extends DifferentialController {
           ->appendChild($other_view));
     }
 
+    $view_button = id(new PHUIButtonView())
+      ->setTag('a')
+      ->setText(pht('Changeset List'))
+      ->setHref('/differential/diff/'.$target->getID().'/changesets/')
+      ->setIcon('fa-align-left');
+
+    $tab_header = id(new PHUIHeaderView())
+      ->setHeader(pht('Revision Contents'))
+      ->addActionLink($view_button);
+
     $tab_view = id(new PHUIObjectBoxView())
-      ->setHeaderText(pht('Revision Contents'))
+      ->setHeader($tab_header)
       ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
       ->addTabGroup($tab_group);
 
@@ -469,7 +554,7 @@ final class DifferentialRevisionViewController extends DifferentialController {
       PhabricatorShowFiletreeSetting::VALUE_ENABLE_FILETREE);
 
     $nav = null;
-    if ($filetree_on) {
+    if ($filetree_on && !$this->isVeryLargeDiff()) {
       $collapsed_key = PhabricatorFiletreeVisibleSetting::SETTINGKEY;
       $collapsed_value = $viewer->getUserSetting($collapsed_key);
 
@@ -525,10 +610,26 @@ final class DifferentialRevisionViewController extends DifferentialController {
     $status_tag = id(new PHUITagView())
       ->setName($revision->getStatusDisplayName())
       ->setIcon($revision->getStatusIcon())
-      ->setColor($revision->getStatusIconColor())
+      ->setColor($revision->getStatusTagColor())
       ->setType(PHUITagView::TYPE_SHADE);
 
     $view->addProperty(PHUIHeaderView::PROPERTY_STATUS, $status_tag);
+
+    // If the revision is in a status other than "Draft", but not broadcasting,
+    // add an additional "Draft" tag to the header to make it clear that this
+    // revision hasn't promoted yet.
+    if (!$revision->getShouldBroadcast() && !$revision->isDraft()) {
+      $draft_status = DifferentialRevisionStatus::newForStatus(
+        DifferentialRevisionStatus::DRAFT);
+
+      $draft_tag = id(new PHUITagView())
+        ->setName($draft_status->getDisplayName())
+        ->setIcon($draft_status->getIcon())
+        ->setColor($draft_status->getTagColor())
+        ->setType(PHUITagView::TYPE_SHADE);
+
+      $view->addTag($draft_tag);
+    }
 
     return $view;
   }
@@ -853,17 +954,11 @@ final class DifferentialRevisionViewController extends DifferentialController {
     $header = id(new PHUIHeaderView())
       ->setHeader(pht('Recent Similar Revisions'));
 
-    $view = id(new DifferentialRevisionListView())
+    return id(new DifferentialRevisionListView())
+      ->setViewer($viewer)
       ->setRevisions($revisions)
       ->setBackground(PHUIObjectBoxView::BLUE_PROPERTY)
-      ->setNoBox(true)
-      ->setUser($viewer);
-
-    $phids = $view->getRequiredHandlePHIDs();
-    $handles = $this->loadViewerHandles($phids);
-    $view->setHandles($handles);
-
-    return $view;
+      ->setNoBox(true);
   }
 
 

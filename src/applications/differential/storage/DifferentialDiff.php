@@ -226,6 +226,8 @@ final class DifferentialDiff
       $changeset->setAddLines($add_lines);
       $changeset->setDelLines($del_lines);
 
+      self::detectGeneratedCode($changeset);
+
       $diff->addUnsavedChangeset($changeset);
     }
     $diff->setLineCount($lines);
@@ -509,10 +511,6 @@ final class DifferentialDiff
     return null;
   }
 
-  public function getHarbormasterPublishablePHID() {
-    return $this->getHarbormasterContainerPHID();
-  }
-
   public function getBuildVariables() {
     $results = array();
 
@@ -555,6 +553,10 @@ final class DifferentialDiff
       'repository.staging.ref' =>
         pht('The ref name for this change in the staging repository.'),
     );
+  }
+
+  public function newBuildableEngine() {
+    return new DifferentialBuildableEngine();
   }
 
 
@@ -815,8 +817,56 @@ final class DifferentialDiff
   }
 
   public function getConduitSearchAttachments() {
-    return array();
+    return array(
+      id(new DifferentialCommitsSearchEngineAttachment())
+        ->setAttachmentKey('commits'),
+    );
   }
 
+  private static function detectGeneratedCode(
+    DifferentialChangeset $changeset) {
+
+    $is_generated_trusted = self::isTrustedGeneratedCode($changeset);
+    if ($is_generated_trusted) {
+      $changeset->setTrustedChangesetAttribute(
+        DifferentialChangeset::ATTRIBUTE_GENERATED,
+        $is_generated_trusted);
+    }
+
+    $is_generated_untrusted = self::isUntrustedGeneratedCode($changeset);
+    if ($is_generated_untrusted) {
+      $changeset->setUntrustedChangesetAttribute(
+        DifferentialChangeset::ATTRIBUTE_GENERATED,
+        $is_generated_untrusted);
+    }
+  }
+
+  private static function isTrustedGeneratedCode(
+    DifferentialChangeset $changeset) {
+
+    $filename = $changeset->getFilename();
+
+    $paths = PhabricatorEnv::getEnvConfig('differential.generated-paths');
+    foreach ($paths as $regexp) {
+      if (preg_match($regexp, $filename)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private static function isUntrustedGeneratedCode(
+    DifferentialChangeset $changeset) {
+
+    if ($changeset->getHunks()) {
+      $new_data = $changeset->makeNewFile();
+      if (strpos($new_data, '@'.'generated') !== false) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 
 }

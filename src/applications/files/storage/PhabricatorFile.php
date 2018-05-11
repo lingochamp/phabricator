@@ -648,10 +648,17 @@ final class PhabricatorFile extends PhabricatorFileDAO
           // just bail out.
           throw $status;
         } else {
-          // This is HTTP 2XX, so use the response body to save the
-          // file data.
+          // This is HTTP 2XX, so use the response body to save the file data.
+          // Provide a default name based on the URI, truncating it if the URI
+          // is exceptionally long.
+
+          $default_name = basename($uri);
+          $default_name = id(new PhutilUTF8StringTruncator())
+            ->setMaximumBytes(64)
+            ->truncateString($default_name);
+
           $params = $params + array(
-            'name' => basename($uri),
+            'name' => $default_name,
           );
 
           return self::newFromFileData($body, $params);
@@ -926,6 +933,19 @@ final class PhabricatorFile extends PhabricatorFileDAO
     }
 
     $mime_map = PhabricatorEnv::getEnvConfig('files.video-mime-types');
+    $mime_type = $this->getMimeType();
+    return idx($mime_map, $mime_type);
+  }
+
+  public function isPDF() {
+    if (!$this->isViewableInBrowser()) {
+      return false;
+    }
+
+    $mime_map = array(
+      'application/pdf' => 'application/pdf',
+    );
+
     $mime_type = $this->getMimeType();
     return idx($mime_map, $mime_type);
   }

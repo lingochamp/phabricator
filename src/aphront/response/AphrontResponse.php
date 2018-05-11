@@ -28,6 +28,7 @@ abstract class AphrontResponse extends Phobject {
          'connect-src' => array(),
          'frame-src' => array(),
          'form-action' => array(),
+         'object-src' => array(),
        );
     }
 
@@ -112,6 +113,7 @@ abstract class AphrontResponse extends Phobject {
 
     try {
       $cdn = PhabricatorEnv::getEnvConfig('security.alternate-file-domain');
+      $base_uri = PhabricatorEnv::getURI('/');
     } catch (Exception $ex) {
       return null;
     }
@@ -123,8 +125,6 @@ abstract class AphrontResponse extends Phobject {
       // If an alternate file domain is not configured and the user is viewing
       // a Phame blog on a custom domain or some other custom site, we'll still
       // serve resources from the main site. Include the main site explicitly.
-
-      $base_uri = PhabricatorEnv::getURI('/');
       $base_uri = $this->newContentSecurityPolicySource($base_uri);
 
       $default = "'self' {$base_uri}";
@@ -163,8 +163,10 @@ abstract class AphrontResponse extends Phobject {
       $csp[] = "frame-ancestors 'none'";
     }
 
-    // Block relics of the old world: Flash, Java applets, and so on.
-    $csp[] = "object-src 'none'";
+    // Block relics of the old world: Flash, Java applets, and so on. Note
+    // that Chrome prevents the user from viewing PDF documents if they are
+    // served with a policy which excludes the domain they are served from.
+    $csp[] = $this->newContentSecurityPolicy('object-src', "'none'");
 
     // Don't allow forms to submit offsite.
 

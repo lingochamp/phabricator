@@ -7,10 +7,12 @@ final class DifferentialTransactionEditor
   private $isCloseByCommit;
   private $repositoryPHIDOverride = false;
   private $didExpandInlineState = false;
-  private $hasReviewTransaction = false;
-  private $affectedPaths;
   private $firstBroadcast = false;
-  private $wasDraft = false;
+  private $wasBroadcasting;
+  private $isDraftDemotion;
+
+  private $ownersDiff;
+  private $ownersChangesets;
 
   public function getEditorApplicationClass() {
     return 'PhabricatorDifferentialApplication';
@@ -127,17 +129,15 @@ final class DifferentialTransactionEditor
           // built it for us so we don't need to expand it again.
           $this->didExpandInlineState = true;
           break;
-        case DifferentialRevisionAcceptTransaction::TRANSACTIONTYPE:
-        case DifferentialRevisionRejectTransaction::TRANSACTIONTYPE:
-        case DifferentialRevisionResignTransaction::TRANSACTIONTYPE:
-          // If we have a review transaction, we'll skip marking the user
-          // as "Commented" later. This should get cleaner after T10967.
-          $this->hasReviewTransaction = true;
+        case DifferentialRevisionPlanChangesTransaction::TRANSACTIONTYPE:
+          if ($xaction->getMetadataValue('draft.demote')) {
+            $this->isDraftDemotion = true;
+          }
           break;
       }
     }
 
-    $this->wasDraft = $object->isDraft();
+    $this->wasBroadcasting = $object->getShouldBroadcast();
 
     return parent::expandTransactions($object, $xactions);
   }
@@ -487,7 +487,7 @@ final class DifferentialTransactionEditor
     PhabricatorLiskDAO $object,
     array $xactions) {
 
-    if (!$object->shouldBroadcast()) {
+    if (!$object->getShouldBroadcast()) {
       return false;
     }
 
@@ -497,27 +497,42 @@ final class DifferentialTransactionEditor
   protected function shouldSendMail(
     PhabricatorLiskDAO $object,
     array $xactions) {
-
-    if (!$object->shouldBroadcast()) {
-      return false;
-    }
-
     return true;
   }
 
   protected function getMailTo(PhabricatorLiskDAO $object) {
-    $this->requireReviewers($object);
+    if ($object->getShouldBroadcast()) {
+      $this->requireReviewers($object);
 
-    $phids = array();
-    $phids[] = $object->getAuthorPHID();
-    foreach ($object->getReviewers() as $reviewer) {
-      if ($reviewer->isResigned()) {
-        continue;
+      $phids = array();
+      $phids[] = $object->getAuthorPHID();
+      foreach ($object->getReviewers() as $reviewer) {
+        if ($reviewer->isResigned()) {
+          continue;
+        }
+
+        $phids[] = $reviewer->getReviewerPHID();
       }
-
-      $phids[] = $reviewer->getReviewerPHID();
+      return $phids;
     }
-    return $phids;
+
+    // If we're demoting a draft after a build failure, just notify the author.
+    if ($this->isDraftDemotion) {
+      $author_phid = $object->getAuthorPHID();
+      return array(
+        $author_phid,
+      );
+    }
+
+    return array();
+  }
+
+  protected function getMailCC(PhabricatorLiskDAO $object) {
+    if (!$object->getShouldBroadcast()) {
+      return array();
+    }
+
+    return parent::getMailCC($object);
   }
 
   protected function newMailUnexpandablePHIDs(PhabricatorLiskDAO $object) {
@@ -555,7 +570,7 @@ final class DifferentialTransactionEditor
 
     if ($show_lines) {
       $count = new PhutilNumber($object->getLineCount());
-      $action = pht('%s, %s line(s)', $action, $count);
+      $action = pht('%s] [%s', $action, $object->getRevisionScaleGlyphs());
     }
 
     return $action;
@@ -837,11 +852,13 @@ final class DifferentialTransactionEditor
       $revert_phids = array();
     }
 
-    $this->setUnmentionablePHIDMap(
-      array_merge(
-        $task_phids,
-        $rev_phids,
-        $revert_phids));
+    // See PHI574. Respect any unmentionable PHIDs which were set on the
+    // Editor by the caller.
+    $unmentionable_map = $this->getUnmentionablePHIDMap();
+    $unmentionable_map += $task_phids;
+    $unmentionable_map += $rev_phids;
+    $unmentionable_map += $revert_phids;
+    $this->setUnmentionablePHIDMap($unmentionable_map);
 
     $result = array();
     foreach ($edges as $type => $specs) {
@@ -953,13 +970,20 @@ final class DifferentialTransactionEditor
       return array();
     }
 
-    if (!$this->affectedPaths) {
+    $diff = $this->ownersDiff;
+    $changesets = $this->ownersChangesets;
+
+    $this->ownersDiff = null;
+    $this->ownersChangesets = null;
+
+    if (!$changesets) {
       return array();
     }
 
-    $packages = PhabricatorOwnersPackage::loadAffectedPackages(
+    $packages = PhabricatorOwnersPackage::loadAffectedPackagesForChangesets(
       $repository,
-      $this->affectedPaths);
+      $diff,
+      $changesets);
     if (!$packages) {
       return array();
     }
@@ -1152,7 +1176,7 @@ final class DifferentialTransactionEditor
 
     // If the object is still a draft, prevent "Send me an email" and other
     // similar rules from acting yet.
-    if (!$object->shouldBroadcast()) {
+    if (!$object->getShouldBroadcast()) {
       $adapter->setForbiddenAction(
         HeraldMailableState::STATECONST,
         DifferentialHeraldStateReasons::REASON_DRAFT);
@@ -1240,9 +1264,12 @@ final class DifferentialTransactionEditor
       $paths[] = $path_prefix.'/'.$changeset->getFilename();
     }
 
-    // Save the affected paths; we'll use them later to query Owners. This
-    // uses the un-expanded paths.
-    $this->affectedPaths = $paths;
+    // If this change affected paths, save the changesets so we can apply
+    // Owners rules to them later.
+    if ($paths) {
+      $this->ownersDiff = $diff;
+      $this->ownersChangesets = $changesets;
+    }
 
     // Mark this as also touching all parent paths, so you can see all pending
     // changes to any file within a directory.
@@ -1408,12 +1435,14 @@ final class DifferentialTransactionEditor
     return array(
       'changedPriorToCommitURI' => $this->changedPriorToCommitURI,
       'firstBroadcast' => $this->firstBroadcast,
+      'isDraftDemotion' => $this->isDraftDemotion,
     );
   }
 
   protected function loadCustomWorkerState(array $state) {
     $this->changedPriorToCommitURI = idx($state, 'changedPriorToCommitURI');
     $this->firstBroadcast = idx($state, 'firstBroadcast');
+    $this->isDraftDemotion = idx($state, 'isDraftDemotion');
     return $this;
   }
 
@@ -1538,9 +1567,41 @@ final class DifferentialTransactionEditor
       $auto_undraft = false;
     }
 
-    if ($object->isDraft() && $auto_undraft) {
-      $active_builds = $this->hasActiveBuilds($object);
-      if (!$active_builds) {
+    $can_promote = false;
+    $can_demote = false;
+
+    // "Draft" revisions can promote to "Review Requested" after builds pass,
+    // or demote to "Changes Planned" after builds fail.
+    if ($object->isDraft()) {
+      $can_promote = true;
+      $can_demote = true;
+    }
+
+    // See PHI584. "Changes Planned" revisions which are not yet broadcasting
+    // can promote to "Review Requested" if builds pass.
+
+    // This pass is presumably the result of someone restarting the builds and
+    // having them work this time, perhaps because the builds are not perfectly
+    // reliable or perhaps because someone fixed some issue with build hardware
+    // or some other dependency.
+
+    // Currently, there's no legitimate way to end up in this state except
+    // through automatic demotion, so this behavior should not generate an
+    // undue level of confusion or ambiguity. Also note that these changes can
+    // not demote again since they've already been demoted once.
+    if ($object->isChangePlanned()) {
+      if (!$object->getShouldBroadcast()) {
+        $can_promote = true;
+      }
+    }
+
+    if (($can_promote || $can_demote) && $auto_undraft) {
+      $status = $this->loadCompletedBuildableStatus($object);
+
+      $is_passed = ($status === HarbormasterBuildableStatus::STATUS_PASSED);
+      $is_failed = ($status === HarbormasterBuildableStatus::STATUS_FAILED);
+
+      if ($is_passed && $can_promote) {
         // When Harbormaster moves a revision out of the draft state, we
         // attribute the action to the revision author since this is more
         // natural and more useful.
@@ -1572,6 +1633,20 @@ final class DifferentialTransactionEditor
         // batch of transactions finishes so that Herald can fire on the new
         // revision state. See T13027 for discussion.
         $this->queueTransaction($xaction);
+      } else if ($is_failed && $can_demote) {
+        // When demoting a revision, we act as "Harbormaster" instead of
+        // the author since this feels a little more natural.
+        $harbormaster_phid = id(new PhabricatorHarbormasterApplication())
+          ->getPHID();
+
+        $xaction = $object->getApplicationTransactionTemplate()
+          ->setAuthorPHID($harbormaster_phid)
+          ->setMetadataValue('draft.demote', true)
+          ->setTransactionType(
+            DifferentialRevisionPlanChangesTransaction::TRANSACTIONTYPE)
+          ->setNewValue(true);
+
+        $this->queueTransaction($xaction);
       }
     }
 
@@ -1587,32 +1662,24 @@ final class DifferentialTransactionEditor
     // email so the mail gets enriched with "SUMMARY" and "TEST PLAN".
 
     $is_new = $this->getIsNewObject();
-    $was_draft = $this->wasDraft;
+    $was_broadcasting = $this->wasBroadcasting;
 
-    if (!$object->isDraft() && ($was_draft || $is_new)) {
-      if (!$object->getHasBroadcast()) {
+    if ($object->getShouldBroadcast()) {
+      if (!$was_broadcasting || $is_new) {
         // Mark this as the first broadcast we're sending about the revision
         // so mail can generate specially.
         $this->firstBroadcast = true;
-
-        $object
-          ->setHasBroadcast(true)
-          ->save();
       }
     }
 
     return $xactions;
   }
 
-  private function hasActiveBuilds($object) {
+  private function loadCompletedBuildableStatus(
+    DifferentialRevision $revision) {
     $viewer = $this->requireActor();
-
-    $builds = $object->loadActiveBuilds($viewer);
-    if (!$builds) {
-      return false;
-    }
-
-    return true;
+    $builds = $revision->loadImpactfulBuilds($viewer);
+    return $revision->newBuildableStatusForBuilds($builds);
   }
 
   private function requireReviewers(DifferentialRevision $revision) {
