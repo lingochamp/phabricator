@@ -21,6 +21,8 @@ final class PhabricatorRepositoryCommit
 
   protected $repositoryID;
   protected $phid;
+  protected $authorIdentityPHID;
+  protected $committerIdentityPHID;
   protected $commitIdentifier;
   protected $epoch;
   protected $mailKey;
@@ -42,6 +44,9 @@ final class PhabricatorRepositoryCommit
   private $audits = self::ATTACHABLE;
   private $repository = self::ATTACHABLE;
   private $customFields = self::ATTACHABLE;
+  private $authorIdentity = self::ATTACHABLE;
+  private $committerIdentity = self::ATTACHABLE;
+
   private $drafts = array();
   private $auditAuthorityPHIDs = array();
 
@@ -113,6 +118,8 @@ final class PhabricatorRepositoryCommit
         'commitIdentifier' => 'text40',
         'mailKey' => 'bytes20',
         'authorPHID' => 'phid?',
+        'authorIdentityPHID' => 'phid?',
+        'committerIdentityPHID' => 'phid?',
         'auditStatus' => 'uint32',
         'summary' => 'text255',
         'importStatus' => 'uint32',
@@ -185,6 +192,22 @@ final class PhabricatorRepositoryCommit
 
   public function hasAttachedAudits() {
     return ($this->audits !== self::ATTACHABLE);
+  }
+
+  public function attachIdentities(
+    PhabricatorRepositoryIdentity $author = null,
+    PhabricatorRepositoryIdentity $committer = null) {
+
+    $this->authorIdentity = $author;
+    $this->committerIdentity = $committer;
+  }
+
+  public function getAuthorIdentity() {
+    return $this->assertAttached($this->authorIdentity);
+  }
+
+  public function getCommiterIdentity() {
+    return $this->assertAttached($this->committerIdentity);
   }
 
   public function loadAndAttachAuditAuthority(

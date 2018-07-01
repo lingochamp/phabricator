@@ -592,12 +592,13 @@ final class DifferentialTransactionEditor
   }
 
   protected function buildMailTemplate(PhabricatorLiskDAO $object) {
-    $id = $object->getID();
+    $monogram = $object->getMonogram();
     $title = $object->getTitle();
-    $subject = "D{$id}: {$title}";
 
     return id(new PhabricatorMetaMTAMail())
-      ->setSubject($subject);
+      ->setSubject(pht('%s: %s', $monogram, $title))
+      ->setMustEncryptSubject(pht('%s: Revision Updated', $monogram))
+      ->setMustEncryptURI($object->getURI());
   }
 
   protected function getTransactionsForMail(
@@ -682,8 +683,13 @@ final class DifferentialTransactionEditor
       if ($config_inline || $config_attach) {
         $body_limit = PhabricatorEnv::getEnvConfig('metamta.email-body-limit');
 
-        $patch = $this->buildPatchForMail($diff);
-        if ($config_inline) {
+        try {
+          $patch = $this->buildPatchForMail($diff, $body_limit);
+        } catch (ArcanistDiffByteSizeException $ex) {
+          $patch = null;
+        }
+
+        if (($patch !== null) && $config_inline) {
           $lines = substr_count($patch, "\n");
           $bytes = strlen($patch);
 
@@ -706,7 +712,7 @@ final class DifferentialTransactionEditor
           }
         }
 
-        if ($config_attach) {
+        if (($patch !== null) && $config_attach) {
           // See T12033, T11767, and PHI55. This is a crude fix to stop the
           // major concrete problems that lackluster email size limits cause.
           if (strlen($patch) < $body_limit) {
@@ -1411,13 +1417,14 @@ final class DifferentialTransactionEditor
       array('style' => 'font-family: monospace;'), $patch);
   }
 
-  private function buildPatchForMail(DifferentialDiff $diff) {
+  private function buildPatchForMail(DifferentialDiff $diff, $byte_limit) {
     $format = PhabricatorEnv::getEnvConfig('metamta.differential.patch-format');
 
     return id(new DifferentialRawDiffRenderer())
       ->setViewer($this->getActor())
       ->setFormat($format)
       ->setChangesets($diff->getChangesets())
+      ->setByteLimit($byte_limit)
       ->buildPatch();
   }
 
