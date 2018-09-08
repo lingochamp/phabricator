@@ -7,7 +7,7 @@ final class PhrictionEditController
     $viewer = $request->getViewer();
     $id = $request->getURIData('id');
 
-    $current_version = null;
+    $max_version = null;
     if ($id) {
       $is_new = false;
       $document = id(new PhrictionDocumentQuery())
@@ -24,7 +24,7 @@ final class PhrictionEditController
         return new Aphront404Response();
       }
 
-      $current_version = $document->getContent()->getVersion();
+      $max_version = $document->getMaxVersion();
 
       $revert = $request->getInt('revert');
       if ($revert) {
@@ -37,9 +37,12 @@ final class PhrictionEditController
           return new Aphront404Response();
         }
       } else {
-        $content = $document->getContent();
+        $content = id(new PhrictionContentQuery())
+          ->setViewer($viewer)
+          ->withDocumentPHIDs(array($document->getPHID()))
+          ->setLimit(1)
+          ->executeOne();
       }
-
     } else {
       $slug = $request->getStr('slug');
       $slug = PhabricatorSlug::normalize($slug);
@@ -54,8 +57,13 @@ final class PhrictionEditController
         ->executeOne();
 
       if ($document) {
-        $content = $document->getContent();
-        $current_version = $content->getVersion();
+        $content = id(new PhrictionContentQuery())
+          ->setViewer($viewer)
+          ->withDocumentPHIDs(array($document->getPHID()))
+          ->setLimit(1)
+          ->executeOne();
+
+        $max_version = $document->getMaxVersion();
         $is_new = false;
       } else {
         $document = PhrictionDocument::initializeNewDocument($viewer, $slug);
@@ -121,16 +129,19 @@ final class PhrictionEditController
       $v_projects = array_reverse($v_projects);
     }
 
+    $v_space = $document->getSpacePHID();
+
     if ($request->isFormPost()) {
 
       $title = $request->getStr('title');
       $content_text = $request->getStr('content');
       $notes = $request->getStr('description');
-      $current_version = $request->getInt('contentVersion');
+      $max_version = $request->getInt('contentVersion');
       $v_view = $request->getStr('viewPolicy');
       $v_edit = $request->getStr('editPolicy');
       $v_cc = $request->getArr('cc');
       $v_projects = $request->getArr('projects');
+      $v_space = $request->getStr('spacePHID');
 
       $xactions = array();
       $xactions[] = id(new PhrictionTransaction())
@@ -147,6 +158,9 @@ final class PhrictionEditController
         ->setTransactionType(PhabricatorTransactions::TYPE_EDIT_POLICY)
         ->setNewValue($v_edit);
       $xactions[] = id(new PhrictionTransaction())
+        ->setTransactionType(PhabricatorTransactions::TYPE_SPACE)
+        ->setNewValue($v_space);
+      $xactions[] = id(new PhrictionTransaction())
         ->setTransactionType(PhabricatorTransactions::TYPE_SUBSCRIBERS)
         ->setNewValue(array('=' => $v_cc));
 
@@ -162,7 +176,7 @@ final class PhrictionEditController
         ->setContinueOnNoEffect(true)
         ->setDescription($notes)
         ->setProcessContentVersionError(!$request->getBool('overwrite'))
-        ->setContentVersion($current_version);
+        ->setContentVersion($max_version);
 
       try {
         $editor->applyTransactions($document, $xactions);
@@ -192,6 +206,7 @@ final class PhrictionEditController
 
         $document->setViewPolicy($v_view);
         $document->setEditPolicy($v_edit);
+        $document->setSpacePHID($v_space);
       }
     }
 
@@ -219,19 +234,13 @@ final class PhrictionEditController
       ->execute();
     $view_capability = PhabricatorPolicyCapability::CAN_VIEW;
     $edit_capability = PhabricatorPolicyCapability::CAN_EDIT;
-    $codex = id(PhabricatorPolicyCodex::newFromObject($document, $viewer))
-      ->setCapability($view_capability);
 
-    $view_capability_description = $codex->getPolicySpecialRuleForCapability(
-      PhabricatorPolicyCapability::CAN_VIEW)->getDescription();
-    $edit_capability_description = $codex->getPolicySpecialRuleForCapability(
-      PhabricatorPolicyCapability::CAN_EDIT)->getDescription();
 
     $form = id(new AphrontFormView())
       ->setUser($viewer)
       ->addHiddenInput('slug', $document->getSlug())
       ->addHiddenInput('nodraft', $request->getBool('nodraft'))
-      ->addHiddenInput('contentVersion', $current_version)
+      ->addHiddenInput('contentVersion', $max_version)
       ->addHiddenInput('overwrite', $overwrite)
       ->appendChild(
         id(new AphrontFormTextControl())
@@ -267,18 +276,18 @@ final class PhrictionEditController
           ->setDatasource(new PhabricatorMetaMTAMailableDatasource()))
       ->appendChild(
         id(new AphrontFormPolicyControl())
+          ->setViewer($viewer)
           ->setName('viewPolicy')
+          ->setSpacePHID($v_space)
           ->setPolicyObject($document)
           ->setCapability($view_capability)
-          ->setPolicies($policies)
-          ->setCaption($view_capability_description))
+          ->setPolicies($policies))
       ->appendChild(
         id(new AphrontFormPolicyControl())
           ->setName('editPolicy')
           ->setPolicyObject($document)
           ->setCapability($edit_capability)
-          ->setPolicies($policies)
-          ->setCaption($edit_capability_description))
+          ->setPolicies($policies))
       ->appendChild(
         id(new AphrontFormTextControl())
           ->setLabel(pht('Edit Notes'))
@@ -314,17 +323,17 @@ final class PhrictionEditController
     $crumbs->setBorder(true);
 
     $view = id(new PHUITwoColumnView())
-      ->setFooter(array(
-        $draft_note,
-        $form_box,
-        $preview,
-      ));
+      ->setFooter(
+        array(
+          $draft_note,
+          $form_box,
+          $preview,
+        ));
 
     return $this->newPage()
       ->setTitle($page_title)
       ->setCrumbs($crumbs)
       ->appendChild($view);
-
   }
 
 }
